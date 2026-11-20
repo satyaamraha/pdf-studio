@@ -40,9 +40,22 @@ export default defineConfig({
         launch_handler: { client_mode: 'focus-existing' },
       },
       workbox: {
-        // Everything the app needs to work offline, including PDF.js fonts and character maps.
-        globPatterns: ['**/*.{js,mjs,css,html,svg,png,ico,webmanifest,bcmap,pfb,ttf}'],
-        globIgnores: ['samples/**'],
+        // Everything the app needs to work offline is downloaded on first visit, including
+        // the PDF.js fonts used for PDFs that don't embed their own.
+        globPatterns: ['**/*.{js,mjs,css,html,svg,png,ico,webmanifest,pfb,ttf}'],
+        // Character maps (168 small files) are only needed for Chinese, Japanese and Korean
+        // PDFs, so they are fetched when such a PDF is opened and kept from then on.
+        globIgnores: ['samples/**', 'pdfjs/cmaps/**'],
+        runtimeCaching: [
+          {
+            urlPattern: ({ url }) => url.pathname.includes('/pdfjs/cmaps/'),
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'pdfjs-cmaps',
+              expiration: { maxEntries: 200 },
+            },
+          },
+        ],
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
         navigateFallback: 'index.html',
         cleanupOutdatedCaches: true,
