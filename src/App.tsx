@@ -9,7 +9,8 @@ import type { SidebarPanel } from './components/Sidebar';
 import { commitDocument, initialDocState, isDirty, redo, undo, type Annotation, type DocState } from './lib/annotations';
 import { getOutline, getPageSizes, loadPdf } from './lib/pdf';
 import { hasStudioMarker, isEncrypted } from './lib/pdfBytes';
-import { remapAnnotations, type PageSlot } from './lib/pagePlan';
+import type { FieldDef, FieldValues } from './lib/forms';
+import { remapAnnotations, remapByPage, type PageSlot } from './lib/pagePlan';
 // pdf-lib (saving, page edits) loads on first use rather than at start-up.
 const pdfWrite = () => import('./lib/pdfWrite');
 const pdfPages = () => import('./lib/pdfPages');
@@ -111,6 +112,7 @@ export default function App() {
   const [author, setAuthor] = useState<string>(() => loadPref<{ name: string }>('author', { name: '' }).name);
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
   const [organizeOpen, setOrganizeOpen] = useState(false);
+  const [formsOpen, setFormsOpen] = useState(false);
   const [compressOpen, setCompressOpen] = useState(false);
   const organizeApi = useRef<OrganizeApi | null>(null);
 
@@ -141,6 +143,8 @@ export default function App() {
       handle?: FileSystemFileHandle;
       base: Uint8Array;
       items: Annotation[];
+      defs?: FieldDef[];
+      fields?: FieldValues;
       encrypted: boolean;
       unsaved?: boolean;
     }) => {
@@ -161,7 +165,7 @@ export default function App() {
         sizes,
         outline,
         view: { zoom: 'page-width', scale: 1, rotation: 0, page: 0 },
-        annots: initialDocState(opts.base, opts.items, opts.unsaved),
+        annots: initialDocState(opts.base, opts.items, opts.unsaved, opts.fields, opts.defs),
         docBase: opts.base,
         readOnly: opts.encrypted ? 'Encrypted PDFs can be read but not changed or saved yet.' : null,
       };
@@ -174,10 +178,10 @@ export default function App() {
 
   /** A new, not-yet-saved document (extracted pages, combined files). */
   const openGenerated = useCallback(
-    async (name: string, base: Uint8Array, items: Annotation[]) => {
+    async (name: string, base: Uint8Array, items: Annotation[], defs: FieldDef[] = [], fields: FieldValues = {}) => {
       setLoading((n) => n + 1);
       try {
-        await addTab({ name, base, items, encrypted: false, unsaved: true });
+        await addTab({ name, base, items, defs, fields, encrypted: false, unsaved: true });
       } catch (err) {
         setToast(`Couldn't open “${name}”. ${errorText(err)}`);
       } finally {
@@ -212,8 +216,10 @@ export default function App() {
         const plan: PageSlot[] = counts.flatMap((n, source) => Array.from({ length: n }, (_, index) => ({ source, index, rotate: 0 })));
         const base = await applyPagePlan(sources[0].base, plan, sources.slice(1).map((s) => s.base));
         const items = remapAnnotations(plan, sources.map((s) => s.items));
+        const defs = remapByPage(plan, sources.map((s) => s.defs));
+        const fields = Object.assign({}, ...[...sources].reverse().map((s) => s.fields)) as FieldValues;
         const name = files.length === 1 ? files[0].name : 'Combined.pdf';
-        await addTab({ name, base, items, encrypted: false, unsaved: true });
+        await addTab({ name, base, items, defs, fields, encrypted: false, unsaved: true });
         setOrganizeOpen(true);
       } finally {
         setLoading((n) => n - 1);
@@ -270,14 +276,16 @@ export default function App() {
         const encrypted = isEncrypted(file.data);
         let base = file.data;
         let items: Annotation[] = [];
+        let defs: FieldDef[] = [];
+        let fields: FieldValues = {};
         if (!encrypted && hasStudioMarker(file.data)) {
           try {
-            ({ base, items } = await (await pdfWrite()).extractStudioAnnotations(file.data));
+            ({ base, items, defs, fields } = await (await pdfWrite()).extractStudioAnnotations(file.data));
           } catch {
             /* unreadable by pdf-lib: show the file as it is */
           }
         }
-        await addTab({ name: file.name, path: file.path, handle: file.handle, base, items, encrypted });
+        await addTab({ name: file.name, path: file.path, handle: file.handle, base, items, defs, fields, encrypted });
       } catch (err) {
         setToast(`Couldn't open “${file.name}”. ${errorText(err)}`);
       } finally {
@@ -374,7 +382,7 @@ export default function App() {
       setToast(tab.readOnly);
       return false;
     }
-    const { items, base } = tab.annots;
+    const { items, base, defs, fields } = tab.annots;
     try {
       let path = tab.path;
       let handle = tab.handle;
@@ -393,7 +401,7 @@ export default function App() {
       }
       setLoading((n) => n + 1);
       try {
-        const bytes = await (await pdfWrite()).buildPdf(base, items);
+        const bytes = await (await pdfWrite()).buildPdf(base, items, defs, fields);
         if (isTauri && path) await writePath(path, bytes);
         else if (handle) await writeHandle(handle, bytes);
         else downloadFile(bytes, name);
@@ -401,7 +409,7 @@ export default function App() {
         setLoading((n) => n - 1);
       }
       setTabs((ts) =>
-        ts.map((t) => (t.id === id ? { ...t, path, handle, name, annots: { ...t.annots, saved: { base, items } } } : t)),
+        ts.map((t) => (t.id === id ? { ...t, path, handle, name, annots: { ...t.annots, saved: { base, items, defs, fields } } } : t)),
       );
       setToast(`Saved “${name}”.`);
       return true;
@@ -481,6 +489,9 @@ export default function App() {
         if (isTyping(document.activeElement)) return void document.execCommand(cmd);
         if (organizeOpen && organizeApi.current) return organizeApi.current[cmd]();
         return tab && updateAnnots(tab.id, cmd === 'undo' ? undo : redo);
+      case 'forms':
+        setAnnotateOpen(false);
+        return tab && setFormsOpen((v) => !v);
       case 'organize':
         return tab && !tab.readOnly && setOrganizeOpen((v) => !v);
       case 'compress':
@@ -534,6 +545,7 @@ export default function App() {
         s: 'save',
         'shift+s': 'save_as',
         'shift+o': 'organize',
+        'shift+f': 'forms',
         z: 'undo',
         'shift+z': 'redo',
         y: 'redo',
@@ -700,12 +712,21 @@ export default function App() {
           onStyles={setStyles}
           onAuthor={setAuthor}
           onSave={() => void saveTab(active.id)}
-          onToggleAnnotate={() => setAnnotateOpen((v) => !v)}
+          formsOpen={formsOpen}
+          // Annotating and placing form fields use the page differently: one at a time.
+          onToggleAnnotate={() => {
+            setAnnotateOpen((v) => !v);
+            setFormsOpen(false);
+          }}
+          onToggleForms={() => {
+            setFormsOpen((v) => !v);
+            setAnnotateOpen(false);
+          }}
           onToggleOrganize={() => setOrganizeOpen((v) => !v)}
           onCompress={() => setCompressOpen(true)}
-          onOpenNew={(name, base, items) => {
+          onOpenNew={(name, base, items, defs, fields) => {
             setOrganizeOpen(false);
-            void openGenerated(name, base, items);
+            void openGenerated(name, base, items, defs, fields);
           }}
           onSaveParts={saveParts}
           onError={setToast}

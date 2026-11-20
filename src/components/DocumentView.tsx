@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import {
   annotBox,
   commitDocument,
+  commitForm,
   commitItems,
   isMarkup,
   newId,
@@ -13,6 +14,7 @@ import {
   type DocState,
   type Tool,
 } from '../lib/annotations';
+import { emptyValue, uniqueFieldName, widgetFromDef, type FieldDef, type FieldKind, type FieldValue, type FieldValues, type Widget } from '../lib/forms';
 import { pageMatrix } from '../lib/geometry';
 import { CSS_UNITS, resolveDest, type OutlineNode } from '../lib/pdf';
 import { openExternal } from '../lib/platform';
@@ -21,6 +23,8 @@ import { readSelection } from '../lib/selection';
 import type { ThemePref } from '../lib/theme';
 import { clampScale, stepZoom, type DocTab, type DocView, type LinkTarget, type Zoom } from '../lib/view';
 import { AnnotateBar, TOOL_KEYS } from './AnnotateBar';
+import type { FormApi, FormUi } from './FormLayer';
+import { FormsBar } from './FormsBar';
 import type { OrganizeApi, OutputPart } from './OrganizeView';
 // Organizing pulls in pdf-lib, so it loads when first opened.
 const OrganizeView = lazy(() => import('./OrganizeView').then((m) => ({ default: m.OrganizeView })));
@@ -51,6 +55,7 @@ interface Props {
   findNonce: number;
   annotateOpen: boolean;
   organizeOpen: boolean;
+  formsOpen: boolean;
   organizeApi: React.RefObject<OrganizeApi | null>;
   styles: Styles;
   author: string;
@@ -62,8 +67,9 @@ interface Props {
   onSave: () => void;
   onToggleAnnotate: () => void;
   onToggleOrganize: () => void;
+  onToggleForms: () => void;
   onCompress: () => void;
-  onOpenNew: (name: string, base: Uint8Array, items: Annotation[]) => void;
+  onOpenNew: (name: string, base: Uint8Array, items: Annotation[], defs: FieldDef[], fields: FieldValues) => void;
   onSaveParts: (makeParts: () => Promise<OutputPart[]>) => Promise<void>;
   onError: (message: string) => void;
   onToggleSidebar: () => void;
@@ -395,8 +401,140 @@ export function DocumentView(props: Props) {
     [doc],
   );
 
-  const keyState = useRef({ tool, selectedId, searchOpen, annotateOpen: props.annotateOpen, readOnly: tab.readOnly, organizing: props.organizeOpen });
-  keyState.current = { tool, selectedId, searchOpen, annotateOpen: props.annotateOpen, readOnly: tab.readOnly, organizing: props.organizeOpen };
+  // ----- forms -----
+  const { fields: values, defs } = tab.annots;
+  const [formTool, setFormTool] = useState<'select' | FieldKind>('select');
+  const [selectedDefId, setSelectedDefId] = useState<string | null>(null);
+  const [highlightFields, setHighlightFields] = useState(true);
+  /** Fields already in the file (name → kind), for "Clear form" and unique names. */
+  const [docFields, setDocFields] = useState<Map<string, string>>(new Map());
+
+  useEffect(() => {
+    let cancelled = false;
+    void doc.getFieldObjects().then((objs) => {
+      if (cancelled || !objs) return;
+      const map = new Map<string, string>();
+      for (const [name, list] of Object.entries(objs)) {
+        const type = (list as { type?: string }[]).find((o) => o.type)?.type;
+        if (type) map.set(name, type);
+      }
+      setDocFields(map);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [doc]);
+
+  useEffect(() => {
+    if (!props.formsOpen) {
+      setFormTool('select');
+      setSelectedDefId(null);
+    }
+  }, [props.formsOpen]);
+
+  const selectedDef = defs.find((d) => d.id === selectedDefId) ?? null;
+  const hasForm = docFields.size > 0 || defs.length > 0;
+
+  const placedByPage = useMemo(() => {
+    const map = new Map<number, Widget[]>();
+    for (const d of defs) {
+      const list = map.get(d.page);
+      if (list) list.push(widgetFromDef(d));
+      else map.set(d.page, [widgetFromDef(d)]);
+    }
+    return map;
+  }, [defs]);
+
+  const takenNames = useMemo(() => new Set([...docFields.keys(), ...defs.map((d) => d.name)]), [docFields, defs]);
+  const takenOthers = useMemo(() => {
+    const set = new Set(docFields.keys());
+    for (const d of defs) if (d.id !== selectedDefId && !(selectedDef?.kind === 'radio' && d.name === selectedDef.name)) set.add(d.name);
+    return set;
+  }, [docFields, defs, selectedDefId, selectedDef]);
+
+  const formState = useRef({ selectedDef, takenNames, defs });
+  formState.current = { selectedDef, takenNames, defs };
+
+  const formApi = useMemo<FormApi>(
+    () => ({
+      setValue: (name: string, value: FieldValue) =>
+        onAnnotsRef.current((s) => (s.fields[name] === value ? s : commitForm(s, { fields: { ...s.fields, [name]: value } }))),
+      selectDef: (id) => setSelectedDefId(id),
+      createDef: (def: FieldDef) => {
+        onAnnotsRef.current((s) => commitForm(s, { defs: [...s.defs, def] }));
+        setSelectedDefId(def.id);
+        // Radio buttons usually come several at a time; other tools go back to Select.
+        if (def.kind !== 'radio') setFormTool('select');
+      },
+      updateDef: (def: FieldDef) =>
+        onAnnotsRef.current((s) => {
+          const old = s.defs.find((d) => d.id === def.id);
+          if (!old) return s;
+          // Renaming a radio button renames its whole group.
+          const renamedGroup = old.kind === 'radio' && old.name !== def.name;
+          const nextDefs = s.defs.map((d) => (d.id === def.id ? def : renamedGroup && d.kind === 'radio' && d.name === old.name ? { ...d, name: def.name } : d));
+          let fields = s.fields;
+          if (old.name !== def.name && Object.prototype.hasOwnProperty.call(fields, old.name)) {
+            const { [old.name]: v, ...rest } = fields;
+            fields = { ...rest, [def.name]: v };
+          }
+          return commitForm(s, { defs: nextDefs, fields });
+        }),
+    }),
+    [],
+  );
+
+  const newDef = useCallback(
+    (kind: FieldKind, page: number, box: FieldDef['box']): FieldDef => {
+      const { selectedDef: sel, takenNames: taken, defs: all } = formState.current;
+      const base = { id: newId(), kind, page, box, required: false };
+      if (kind === 'radio') {
+        // Join the selected group, or start a new one.
+        const group = sel?.kind === 'radio' ? sel.name : uniqueFieldName('Radio group', taken);
+        const count = all.filter((d) => d.kind === 'radio' && d.name === group).length;
+        return { ...base, name: group, radioValue: `Choice ${count + 1}` };
+      }
+      const prefix = kind === 'text' ? 'Text' : kind === 'checkbox' ? 'Checkbox' : 'Dropdown';
+      return {
+        ...base,
+        name: uniqueFieldName(prefix, taken),
+        ...(kind === 'text' ? { fontSize: 0, multiline: box.y2 - box.y1 > 40 } : {}),
+        ...(kind === 'dropdown' ? { fontSize: 0, options: ['Option 1', 'Option 2', 'Option 3'] } : {}),
+      };
+    },
+    [],
+  );
+
+  const formUi: FormUi = useMemo(
+    () => ({
+      values,
+      highlight: highlightFields,
+      designing: props.formsOpen,
+      tool: formTool,
+      selectedDefId,
+      newDef,
+      api: formApi,
+    }),
+    [values, highlightFields, props.formsOpen, formTool, selectedDefId, newDef, formApi],
+  );
+
+  const clearForm = () => {
+    const cleared: FieldValues = {};
+    const empty: Record<string, FieldValue> = { text: '', checkbox: false, radiobutton: 'Off', combobox: '', listbox: [] };
+    for (const [name, type] of docFields) if (type in empty) cleared[name] = empty[type];
+    for (const d of defs) cleared[d.name] = emptyValue(widgetFromDef(d));
+    onAnnots((s) => commitForm(s, { fields: cleared }));
+  };
+
+  const deleteDef = (id: string) => {
+    onAnnots((s) => commitForm(s, { defs: s.defs.filter((d) => d.id !== id) }));
+    setSelectedDefId(null);
+  };
+
+  const keyState = useRef({ tool, selectedId, searchOpen, annotateOpen: props.annotateOpen, readOnly: tab.readOnly, organizing: props.organizeOpen, selectedDefId });
+  keyState.current = { tool, selectedId, searchOpen, annotateOpen: props.annotateOpen, readOnly: tab.readOnly, organizing: props.organizeOpen, selectedDefId };
+  const deleteDefRef = useRef(deleteDef);
+  deleteDefRef.current = deleteDef;
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -404,7 +542,9 @@ export function DocumentView(props: Props) {
       // The organize view has its own keys.
       if (k.organizing || isTyping(e.target) || e.metaKey || e.ctrlKey || e.altKey) return;
       const page = viewRef.current.page;
-      if ((e.key === 'Delete' || e.key === 'Backspace') && k.selectedId) stableApi.remove(k.selectedId);
+      if ((e.key === 'Delete' || e.key === 'Backspace') && k.selectedDefId) deleteDefRef.current(k.selectedDefId);
+      else if (e.key === 'Escape' && k.selectedDefId) setSelectedDefId(null);
+      else if ((e.key === 'Delete' || e.key === 'Backspace') && k.selectedId) stableApi.remove(k.selectedId);
       else if (e.key === 'Escape' && k.selectedId) stableApi.select(null);
       else if (e.key === 'Escape' && k.tool !== 'select') setTool('select');
       else if (e.key === 'Escape' && k.searchOpen) closeSearch();
@@ -440,6 +580,7 @@ export function DocumentView(props: Props) {
         sidebarOpen={props.sidebarOpen}
         searchOpen={searchOpen}
         annotateOpen={props.annotateOpen}
+        formsOpen={props.formsOpen}
         organizeOpen={props.organizeOpen}
         canEdit={!tab.readOnly}
         dirty={props.dirty}
@@ -458,6 +599,7 @@ export function DocumentView(props: Props) {
           }
         }}
         onToggleAnnotate={props.onToggleAnnotate}
+        onToggleForms={props.onToggleForms}
         onToggleOrganize={props.onToggleOrganize}
         onCompress={props.onCompress}
         onSave={props.onSave}
@@ -476,9 +618,11 @@ export function DocumentView(props: Props) {
           items={items}
           sizes={sizes}
           apiRef={props.organizeApi}
-          onApply={(base, nextItems) => {
+          defs={defs}
+          fields={values}
+          onApply={(base, nextItems, nextDefs, nextFields) => {
             finalizePending();
-            onAnnots((s) => commitDocument(s, base, nextItems));
+            onAnnots((s) => commitDocument(s, base, nextItems, nextDefs, nextFields));
             props.onToggleOrganize();
           }}
           onClose={props.onToggleOrganize}
@@ -488,7 +632,36 @@ export function DocumentView(props: Props) {
         />
         </Suspense>
       )}
-      {props.annotateOpen && !props.organizeOpen && (
+      {props.formsOpen && !props.organizeOpen && (
+        <FormsBar
+          tool={formTool}
+          selected={selectedDef}
+          highlight={highlightFields}
+          readOnly={tab.readOnly}
+          takenNames={takenOthers}
+          onTool={(t) => {
+            setFormTool(t);
+            if (t !== 'radio') setSelectedDefId(null);
+          }}
+          onHighlight={setHighlightFields}
+          onClear={clearForm}
+          onChange={(d) => formApi.updateDef(d)}
+          onDelete={() => selectedDefId && deleteDef(selectedDefId)}
+        />
+      )}
+      {!props.formsOpen && !props.organizeOpen && hasForm && !props.annotateOpen && (
+        <div className="form-notice">
+          This document has fillable fields.
+          <label className="bar-check">
+            <input type="checkbox" checked={highlightFields} onChange={(e) => setHighlightFields(e.target.checked)} />
+            Highlight fields
+          </label>
+          <button className="plain-btn small" onClick={clearForm}>
+            Clear form
+          </button>
+        </div>
+      )}
+      {props.annotateOpen && !props.organizeOpen && !props.formsOpen && (
         <AnnotateBar
           tool={tool}
           style={toolStyle}
@@ -564,6 +737,8 @@ export function DocumentView(props: Props) {
             activeHit={activeHit}
             apiRef={viewerApi}
             annotsByPage={annotsByPage}
+            placedByPage={placedByPage}
+            formUi={formUi}
             annotUi={annotUi}
             onPageChange={(page) => onView({ page })}
             onScaleChange={(scale) => onView({ scale })}

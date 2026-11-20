@@ -65,6 +65,15 @@ An open-source, cross-platform PDF reader and editor: view, annotate, organize, 
 - Reduce file size: re-saves photos at a lower resolution (three levels) and drops unused data; shows the result before you keep it
 - Page changes and annotation changes share one undo history; annotations move with their pages
 
+**Stage 4 (forms) is done:**
+
+- Fill in any PDF form: text (single and multi-line, character limits, combed boxes), checkboxes, radio buttons, dropdowns and lists; read-only fields are respected
+- "Highlight fields" and "Clear form"; required fields are marked when empty
+- Each change is one undo step, shared with annotations and page edits
+- Saved values get proper appearances, so they show the same in Preview, Acrobat and browsers
+- Add new fields (Forms button): text, checkbox, radio groups and dropdowns; move, resize, rename, set choices, font size, multi-line and required
+- Fields added in PDF Studio stay editable when the file is reopened, and follow their pages in Organize
+
 **Web app (PWA) is done:**
 
 - Installable from Chrome, Edge and Safari ("Install app" button, or Add to Home Screen); runs in its own window
@@ -74,7 +83,7 @@ An open-source, cross-platform PDF reader and editor: view, annotate, organize, 
 - Shows an "Update now" bar when a new version is ready (never reloads over unsaved work)
 - Two-finger pinch zoom on phones and tablets; zooming keeps the spot under your fingers or cursor in place
 
-Limits for now: text boxes and stamps use Helvetica, so characters outside Western European languages appear as "?" in the saved file (the text itself is kept). Encrypted PDFs can be read and annotated but not saved or reorganized. Compression only shrinks JPEG photos (most scans and camera images); other image types are left as they are. Annotations made in other apps are shown but can't be edited yet.
+Limits for now: form text is drawn with Helvetica, so values in non-Latin scripts are left for the reader app to draw (the value itself is saved). Fields that already existed in a file can be filled but not moved or renamed. JavaScript in forms (calculations, validation) isn't run. Text boxes and stamps use Helvetica, so characters outside Western European languages appear as "?" in the saved file (the text itself is kept). Encrypted PDFs can be read and annotated but not saved or reorganized. Compression only shrinks JPEG photos (most scans and camera images); other image types are left as they are. Annotations made in other apps are shown but can't be edited yet.
 
 ### Shortcuts
 
@@ -93,6 +102,7 @@ Limits for now: text boxes and stamps use Helvetica, so characters outside Weste
 | Undo / redo | ⌘Z / ⌘⇧Z | Ctrl+Z / Ctrl+Shift+Z |
 | Delete selected annotation | Delete | Delete |
 | Organize pages | ⌘⇧O | Ctrl+Shift+O |
+| Forms (place fields) | ⌘⇧F | Ctrl+Shift+F |
 | Combine files / reduce file size | ⌘⌥C / ⌘⌥R | Ctrl+Alt+C / Ctrl+Alt+R |
 
 With Annotate on, single keys pick a tool: **V** select, **H** highlight, **U** underline, **K** strikethrough, **N** note, **D** draw, **R** rectangle, **O** ellipse, **L** line, **A** arrow, **T** text box, **S** stamp. **Esc** deselects, then returns to Select.
@@ -126,9 +136,11 @@ In the web UI during development, `http://localhost:1420/?file=/samples/sample.p
 
 - `src/lib/` — PDF loading (`pdf.ts`), search, desktop/browser bridge (`platform.ts`), view state
 - `src/lib/annotations.ts` — the annotation model (PDF coordinates) and undo history
+- `src/lib/forms.ts` — form model (values by field name, placed fields) and reading PDF.js widgets
+- `src/lib/pdfForms.ts` — writes values and placed fields into the PDF with pdf-lib, and reads placed fields back out
 - `src/lib/pdfPages.ts` — page operations (reorder, rotate, delete, insert, merge, extract) and compression
 - `src/lib/pdfWrite.ts` — writes annotations into the PDF with pdf-lib, and reads PDF Studio's own back out on open
-- `src/components/` — `Viewer` (scrolling and layout), `PageView` (one page: drawing, text, links, highlights), `AnnotationLayer` (drawing and editing annotations on a page), `AnnotateBar`, `CommentsPanel`, `OrganizeView`, `CompressDialog`, `Sidebar`, `Toolbar`, `SearchBar`
+- `src/components/` — `Viewer` (scrolling and layout), `PageView` (one page: drawing, text, links, highlights), `AnnotationLayer` (drawing and editing annotations on a page), `AnnotateBar`, `CommentsPanel`, `OrganizeView`, `CompressDialog`, `FormLayer` (inputs over the page, placing fields), `FormsBar`, `Sidebar`, `Toolbar`, `SearchBar`
 - `src/pwa.ts` — service worker registration, install prompt and update notice (web only)
 - `src/lib/platform.ts` — desktop vs browser: file dialogs, File System Access (save in place), drag and drop, "Open with"
 - `src-tauri/` — the desktop shell: reading and safely writing files, native menu, "Open With" handling

@@ -5,7 +5,9 @@ import type { SearchHit } from '../lib/search';
 import type { Annotation } from '../lib/annotations';
 import type { Matrix } from '../lib/geometry';
 import type { LinkTarget } from '../lib/view';
+import { widgetFromAnnotation, type Widget } from '../lib/forms';
 import { AnnotationLayer, type AnnotUi } from './AnnotationLayer';
+import { FormLayer, type FormUi } from './FormLayer';
 
 /** Positions are percentages of the page box so they survive zoom without recomputing. */
 interface Box {
@@ -37,15 +39,19 @@ interface Props {
   matrix: Matrix;
   annots: Annotation[];
   ui: AnnotUi;
+  /** Form fields placed in PDF Studio on this page. */
+  placed: Widget[];
+  formUi: FormUi;
 }
 
-function PageViewImpl({ doc, index, top, left, width, height, scale, rotation, hits, activeHit, onLink, matrix, annots, ui }: Props) {
+function PageViewImpl({ doc, index, top, left, width, height, scale, rotation, hits, activeHit, onLink, matrix, annots, ui, placed, formUi }: Props) {
   const pageRef = useRef<HTMLDivElement>(null);
   const canvasHostRef = useRef<HTMLDivElement>(null);
   const textRef = useRef<HTMLDivElement>(null);
   const textDivsRef = useRef<HTMLElement[]>([]);
   const [textVersion, setTextVersion] = useState(0);
   const [links, setLinks] = useState<LinkBox[]>([]);
+  const [widgets, setWidgets] = useState<Widget[]>([]);
   const [highlights, setHighlights] = useState<HighlightBox[]>([]);
   const [rendered, setRendered] = useState(false);
 
@@ -75,6 +81,8 @@ function PageViewImpl({ doc, index, top, left, width, height, scale, rotation, h
         renderTask = page.render({
           canvasContext: ctx,
           viewport,
+          // Fillable fields are drawn as live inputs on top, not baked into the page image.
+          annotationMode: pdfjs.AnnotationMode.ENABLE_FORMS,
           transform: outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : undefined,
         });
         await renderTask.promise;
@@ -98,7 +106,10 @@ function PageViewImpl({ doc, index, top, left, width, height, scale, rotation, h
         const annotations = await page.getAnnotations({ intent: 'display' });
         if (cancelled) return;
         const boxes: LinkBox[] = [];
+        const found: Widget[] = [];
         for (const a of annotations) {
+          const w = widgetFromAnnotation(a);
+          if (w) found.push(w);
           if (a.subtype !== 'Link' || (!a.url && !a.dest)) continue;
           const [x1, y1, x2, y2] = viewport.convertToViewportRectangle(a.rect);
           boxes.push({
@@ -111,6 +122,7 @@ function PageViewImpl({ doc, index, top, left, width, height, scale, rotation, h
           });
         }
         setLinks(boxes);
+        setWidgets(found);
       } catch (err) {
         if (!cancelled && !(err instanceof pdfjs.RenderingCancelledException)) console.error(err);
       }
@@ -193,6 +205,9 @@ function PageViewImpl({ doc, index, top, left, width, height, scale, rotation, h
       </div>
       <div ref={textRef} className="textLayer" />
       <AnnotationLayer page={index} items={annots} matrix={matrix} {...ui} />
+      {(widgets.length > 0 || placed.length > 0 || formUi.designing) && (
+        <FormLayer page={index} widgets={widgets} placed={placed} matrix={matrix} {...formUi} />
+      )}
       <div className="link-layer">
         {links.map((l, i) => (
           <a

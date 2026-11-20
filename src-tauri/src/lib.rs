@@ -164,6 +164,7 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
       &PredefinedMenuItem::separator(app)?,
       &item("rotate", "Rotate View", "CmdOrCtrl+R")?,
       &item("organize", "Organize Pages", "CmdOrCtrl+Shift+O")?,
+      &item("forms", "Forms", "CmdOrCtrl+Shift+F")?,
       &item("toggle_sidebar", "Toggle Sidebar", "CmdOrCtrl+Alt+S")?,
       &item("toggle_night", "Night Reading", "CmdOrCtrl+Alt+N")?,
     ],

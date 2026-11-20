@@ -23,6 +23,8 @@ import {
   type Annotation,
 } from './annotations';
 import type { Box, Point } from './geometry';
+import type { FieldDef, FieldValues } from './forms';
+import { extractStudioFields, writeForm } from './pdfForms';
 import { collectGarbage } from './pdfPages';
 import { hasStudioMarker, STUDIO_KEY } from './pdfBytes';
 import { textWidth, toWinAnsi } from './textMetrics';
@@ -36,10 +38,17 @@ import { textWidth, toWinAnsi } from './textMetrics';
  * Pulls PDF Studio's own annotations out of a file. Returns the file without them
  * (what the viewer displays) and the annotations as editable objects.
  */
-export async function extractStudioAnnotations(bytes: Uint8Array): Promise<{ base: Uint8Array; items: Annotation[] }> {
+export interface Extracted {
+  base: Uint8Array;
+  items: Annotation[];
+  defs: FieldDef[];
+  fields: FieldValues;
+}
+
+export async function extractStudioAnnotations(bytes: Uint8Array): Promise<Extracted> {
   // Our appearance streams carry the marker in their (never compressed) dictionary,
   // so a byte scan tells cheaply whether there is anything to extract.
-  if (!hasStudioMarker(bytes)) return { base: bytes, items: [] };
+  if (!hasStudioMarker(bytes)) return { base: bytes, items: [], defs: [], fields: {} };
   const pdf = await PDFDocument.load(bytes, { updateMetadata: false });
   const items: Annotation[] = [];
   pdf.getPages().forEach((page, index) => {
@@ -68,15 +77,22 @@ export async function extractStudioAnnotations(bytes: Uint8Array): Promise<{ bas
     }
     if (keep.length !== annots.size()) page.node.set(PDFName.of('Annots'), pdf.context.obj(keep));
   });
-  if (!items.length) return { base: bytes, items };
+  const { defs, fields } = extractStudioFields(pdf);
+  if (!items.length && !defs.length) return { base: bytes, items, defs, fields };
   collectGarbage(pdf);
   const base = await pdf.save({ useObjectStreams: true, updateFieldAppearances: false });
-  return { base, items };
+  return { base, items, defs, fields };
 }
 
-/** Writes the annotations into a copy of `base` and returns the new file. */
-export async function buildPdf(base: Uint8Array, items: Annotation[]): Promise<Uint8Array> {
+/** Writes annotations, placed fields and form values into a copy of `base` and returns the new file. */
+export async function buildPdf(
+  base: Uint8Array,
+  items: Annotation[],
+  defs: FieldDef[] = [],
+  fields: FieldValues = {},
+): Promise<Uint8Array> {
   const pdf = await PDFDocument.load(base, { updateMetadata: false });
+  await writeForm(pdf, defs, fields);
   const pages = pdf.getPages();
   for (const a of items) {
     const page = pages[a.page];

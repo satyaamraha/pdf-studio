@@ -1,4 +1,5 @@
 import { boxFromPoints, padBox, type Box, type Point } from './geometry';
+import type { FieldDef, FieldValues } from './forms';
 import { wrapText } from './textMetrics';
 
 /**
@@ -242,15 +243,20 @@ export function simplifyPoints(points: Point[], minDist: number): Point[] {
 
 // ----- Undo / redo history -----
 
-/** One version of a document: its file bytes (without PDF Studio annotations) and its annotations. */
+/** One version of a document: its file bytes (without PDF Studio's own content), annotations and form state. */
 export interface Snapshot {
   base: Uint8Array;
   items: Annotation[];
+  /** Form values the user has entered, by field name. */
+  fields: FieldValues;
+  /** Form fields placed in PDF Studio. */
+  defs: FieldDef[];
 }
 
 /**
  * The editable state of an open document. Annotation edits change `items`; page
- * edits (reorder, delete, compress…) change `base`. Both share one undo history.
+ * edits (reorder, delete, compress…) change `base`; filling and designing forms change
+ * `fields` and `defs`. All share one undo history.
  */
 export interface DocState extends Snapshot {
   past: Snapshot[];
@@ -259,28 +265,42 @@ export interface DocState extends Snapshot {
   saved: Snapshot;
 }
 
-export function initialDocState(base: Uint8Array, items: Annotation[], unsaved = false): DocState {
+const snap = (s: Snapshot): Snapshot => ({ base: s.base, items: s.items, fields: s.fields, defs: s.defs });
+
+export function initialDocState(
+  base: Uint8Array,
+  items: Annotation[],
+  unsaved = false,
+  fields: FieldValues = {},
+  defs: FieldDef[] = [],
+): DocState {
+  const current = { base, items, fields, defs };
   // A brand-new document (e.g. combined files) starts unsaved.
-  const saved = unsaved ? { base: new Uint8Array(), items: [] } : { base, items };
-  return { base, items, past: [], future: [], saved };
+  const saved = unsaved ? { base: new Uint8Array(), items: [], fields: {}, defs: [] } : current;
+  return { ...current, past: [], future: [], saved };
 }
 
 // Page edits keep whole copies of the file, so keep fewer of those.
 const HISTORY_LIMIT = 100;
 
-function push(past: Snapshot[], snap: Snapshot): Snapshot[] {
-  return [...past.slice(-HISTORY_LIMIT + 1), snap];
+function push(past: Snapshot[], s: Snapshot): Snapshot[] {
+  return [...past.slice(-HISTORY_LIMIT + 1), s];
 }
 
 /** Applies an annotation change. With `previous`, records that snapshot (used when a drag started earlier). */
 export function commitItems(state: DocState, items: Annotation[], previous: Annotation[] = state.items): DocState {
   if (items === previous) return { ...state, items };
-  return { ...state, items, past: push(state.past, { base: state.base, items: previous }), future: [] };
+  return { ...state, items, past: push(state.past, { ...snap(state), items: previous }), future: [] };
 }
 
-/** Applies a change to the file itself (page edits, compression), with the annotations that go with it. */
-export function commitDocument(state: DocState, base: Uint8Array, items: Annotation[]): DocState {
-  return { ...state, base, items, past: push(state.past, { base: state.base, items: state.items }), future: [] };
+/** Applies a change to the file itself (page edits, compression), with the annotations and fields that go with it. */
+export function commitDocument(state: DocState, base: Uint8Array, items: Annotation[], defs: FieldDef[] = state.defs, fields: FieldValues = state.fields): DocState {
+  return { ...state, base, items, defs, fields, past: push(state.past, snap(state)), future: [] };
+}
+
+/** Applies a form change (values typed in, fields placed or edited). */
+export function commitForm(state: DocState, patch: { fields?: FieldValues; defs?: FieldDef[] }): DocState {
+  return { ...state, ...patch, past: push(state.past, snap(state)), future: [] };
 }
 
 /** Replaces items without adding an undo step (live preview while dragging). */
@@ -291,22 +311,18 @@ export function previewItems(state: DocState, items: Annotation[]): DocState {
 export function undo(state: DocState): DocState {
   const prev = state.past[state.past.length - 1];
   if (!prev) return state;
-  return {
-    ...state,
-    ...prev,
-    past: state.past.slice(0, -1),
-    future: [{ base: state.base, items: state.items }, ...state.future],
-  };
+  return { ...state, ...prev, past: state.past.slice(0, -1), future: [snap(state), ...state.future] };
 }
 
 export function redo(state: DocState): DocState {
   const next = state.future[0];
   if (!next) return state;
-  return { ...state, ...next, past: push(state.past, { base: state.base, items: state.items }), future: state.future.slice(1) };
+  return { ...state, ...next, past: push(state.past, snap(state)), future: state.future.slice(1) };
 }
 
 export function isDirty(state: DocState): boolean {
-  return state.items !== state.saved.items || state.base !== state.saved.base;
+  const s = state.saved;
+  return state.items !== s.items || state.base !== s.base || state.fields !== s.fields || state.defs !== s.defs;
 }
 
 export function markSaved(state: DocState, saved: Snapshot): DocState {

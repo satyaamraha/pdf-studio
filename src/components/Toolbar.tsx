@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import {
   ChevronLeft,
   ChevronRight,
+  FormInput,
   LayoutGrid,
   Minimize2,
   Minus,
@@ -27,6 +28,7 @@ interface Props {
   sidebarOpen: boolean;
   searchOpen: boolean;
   annotateOpen: boolean;
+  formsOpen: boolean;
   organizeOpen: boolean;
   canEdit: boolean;
   dirty: boolean;
@@ -39,6 +41,7 @@ interface Props {
   onRotate: () => void;
   onToggleSearch: () => void;
   onToggleAnnotate: () => void;
+  onToggleForms: () => void;
   onToggleOrganize: () => void;
   onCompress: () => void;
   onSave: () => void;
@@ -144,6 +147,15 @@ export function Toolbar(p: Props) {
         disabled={p.organizeOpen}
       >
         <PenLine size={17} /> <span>Annotate</span>
+      </button>
+      <button
+        className={`icon-btn wide${p.formsOpen && !p.organizeOpen ? ' on' : ''}`}
+        onClick={p.onToggleForms}
+        title="Forms: fill in fields, or add new ones"
+        aria-pressed={p.formsOpen}
+        disabled={p.organizeOpen}
+      >
+        <FormInput size={17} /> <span>Forms</span>
       </button>
       <button
         className={`icon-btn wide${p.organizeOpen ? ' on' : ''}`}

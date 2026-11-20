@@ -12,6 +12,8 @@ import {
   Undo2,
 } from 'lucide-react';
 import type { Annotation } from '../lib/annotations';
+import type { FieldDef, FieldValues } from '../lib/forms';
+import { remapByPage } from '../lib/pagePlan';
 import { getPageSizes, loadPdf, rotatedSize, type PageSize, type PDFDocumentProxy } from '../lib/pdf';
 import { isEncrypted } from '../lib/pdfBytes';
 import { applyPagePlan, remapAnnotations, type PageSlot } from '../lib/pdfPages';
@@ -25,6 +27,8 @@ interface Source {
   doc: PDFDocumentProxy;
   base: Uint8Array;
   items: Annotation[];
+  defs: FieldDef[];
+  fields: FieldValues;
   sizes: PageSize[];
 }
 
@@ -47,11 +51,13 @@ interface Props {
   doc: PDFDocumentProxy;
   base: Uint8Array;
   items: Annotation[];
+  defs: FieldDef[];
+  fields: FieldValues;
   sizes: PageSize[];
   apiRef: RefObject<OrganizeApi | null>;
-  onApply: (base: Uint8Array, items: Annotation[]) => void;
+  onApply: (base: Uint8Array, items: Annotation[], defs: FieldDef[], fields: FieldValues) => void;
   onClose: () => void;
-  onOpenNew: (name: string, base: Uint8Array, items: Annotation[]) => void;
+  onOpenNew: (name: string, base: Uint8Array, items: Annotation[], defs: FieldDef[], fields: FieldValues) => void;
   /** Asks where to save, then calls `makeParts` and writes the result. */
   onSaveParts: (makeParts: () => Promise<OutputPart[]>) => Promise<void>;
   onError: (message: string) => void;
@@ -80,7 +86,7 @@ export function OrganizeView(props: Props) {
     [],
   );
   const [sources, setSources] = useState<Source[]>(() => [
-    { name: props.name, doc: props.doc, base: props.base, items: props.items, sizes: props.sizes },
+    { name: props.name, doc: props.doc, base: props.base, items: props.items, defs: props.defs, fields: props.fields, sizes: props.sizes },
   ]);
   const [history, setHistory] = useState<{ cards: Card[]; past: Card[][]; future: Card[][] }>({
     cards: initialCards,
@@ -215,10 +221,10 @@ export function OrganizeView(props: Props) {
           props.onError(`“${file.name}” is encrypted, so its pages can't be added yet.`);
           continue;
         }
-        const { base, items } = await extractStudioAnnotations(file.data);
+        const { base, items, defs, fields } = await extractStudioAnnotations(file.data);
         const doc = await loadPdf(base.slice(), async () => null);
         if (!doc) continue;
-        added.push({ name: file.name, doc, base, items, sizes: await getPageSizes(doc) });
+        added.push({ name: file.name, doc, base, items, defs, fields, sizes: await getPageSizes(doc) });
       }
       if (!added.length) return;
       const first = sourcesRef.current.length;
@@ -240,14 +246,17 @@ export function OrganizeView(props: Props) {
     const plan: PageSlot[] = list.map(({ source, index, rotate, blank }) => ({ source, index, rotate, blank }));
     const base = await applyPagePlan(sources[0].base, plan, sources.slice(1).map((s) => s.base));
     const items = remapAnnotations(plan, sources.map((s) => s.items));
-    return { base, items };
+    const defs = remapByPage(plan, sources.map((s) => s.defs));
+    // Values of fields from every file involved (later files don't override earlier ones).
+    const fields = Object.assign({}, ...[...sources].reverse().map((s) => s.fields)) as FieldValues;
+    return { base, items, defs, fields };
   };
 
   const apply = async () => {
     setBusy('Applying changes…');
     try {
-      const { base, items } = await build(cards);
-      props.onApply(base, items);
+      const { base, items, defs, fields } = await build(cards);
+      props.onApply(base, items, defs, fields);
     } catch (err) {
       props.onError(`Couldn't change the pages. ${err instanceof Error ? err.message : String(err)}`);
       setBusy(null);
@@ -258,9 +267,9 @@ export function OrganizeView(props: Props) {
     if (!hasSelection) return;
     setBusy('Extracting pages…');
     try {
-      const { base, items } = await build(selectedCards);
+      const { base, items, defs, fields } = await build(selectedCards);
       const numbers = selectedCards.map((c) => cards.indexOf(c) + 1);
-      props.onOpenNew(`${stem(props.name)} (${describePages(numbers)}).pdf`, base, items);
+      props.onOpenNew(`${stem(props.name)} (${describePages(numbers)}).pdf`, base, items, defs, fields);
     } catch (err) {
       props.onError(`Couldn't extract the pages. ${err instanceof Error ? err.message : String(err)}`);
     } finally {
@@ -275,11 +284,11 @@ export function OrganizeView(props: Props) {
         setBusy('Splitting…');
         const parts: OutputPart[] = [];
         for (let i = 0; i < groups.length; i++) {
-          const { base, items } = await build(groups[i]);
+          const { base, items, defs, fields } = await build(groups[i]);
           const first = cards.indexOf(groups[i][0]) + 1;
           const last = cards.indexOf(groups[i][groups[i].length - 1]) + 1;
           const range = first === last ? `p${first}` : `p${first}-${last}`;
-          parts.push({ name: `${stem(props.name)} (${range}).pdf`, bytes: await buildPdf(base, items) });
+          parts.push({ name: `${stem(props.name)} (${range}).pdf`, bytes: await buildPdf(base, items, defs, fields) });
         }
         return parts;
       });
