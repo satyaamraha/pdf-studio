@@ -3,6 +3,7 @@ import {
   ChevronLeft,
   ChevronRight,
   FormInput,
+  Signature,
   LayoutGrid,
   Minimize2,
   Minus,
@@ -31,6 +32,7 @@ interface Props {
   formsOpen: boolean;
   organizeOpen: boolean;
   canEdit: boolean;
+  canSign: boolean;
   dirty: boolean;
   night: boolean;
   theme: ThemePref;
@@ -42,6 +44,7 @@ interface Props {
   onToggleSearch: () => void;
   onToggleAnnotate: () => void;
   onToggleForms: () => void;
+  onSign: () => void;
   onToggleOrganize: () => void;
   onCompress: () => void;
   onSave: () => void;
@@ -144,16 +147,25 @@ export function Toolbar(p: Props) {
         onClick={p.onToggleAnnotate}
         title="Annotate"
         aria-pressed={p.annotateOpen}
-        disabled={p.organizeOpen}
+        disabled={p.organizeOpen || !p.canEdit}
       >
         <PenLine size={17} /> <span>Annotate</span>
+      </button>
+      <button
+        className="icon-btn wide"
+        onClick={p.onSign}
+        title="Sign: add your signature, initials or the date"
+        disabled={p.organizeOpen || !p.canSign}
+        data-sign-toggle
+      >
+        <Signature size={17} /> <span>Sign</span>
       </button>
       <button
         className={`icon-btn wide${p.formsOpen && !p.organizeOpen ? ' on' : ''}`}
         onClick={p.onToggleForms}
         title="Forms: fill in fields, or add new ones"
         aria-pressed={p.formsOpen}
-        disabled={p.organizeOpen}
+        disabled={p.organizeOpen || !p.canEdit}
       >
         <FormInput size={17} /> <span>Forms</span>
       </button>

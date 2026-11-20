@@ -165,6 +165,7 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
       &item("rotate", "Rotate View", "CmdOrCtrl+R")?,
       &item("organize", "Organize Pages", "CmdOrCtrl+Shift+O")?,
       &item("forms", "Forms", "CmdOrCtrl+Shift+F")?,
+      &item("sign", "Sign…", "CmdOrCtrl+Shift+G")?,
       &item("toggle_sidebar", "Toggle Sidebar", "CmdOrCtrl+Alt+S")?,
       &item("toggle_night", "Night Reading", "CmdOrCtrl+Alt+N")?,
     ],

@@ -15,7 +15,8 @@ import {
   type Tool,
 } from '../lib/annotations';
 import { emptyValue, uniqueFieldName, widgetFromDef, type FieldDef, type FieldKind, type FieldValue, type FieldValues, type Widget } from '../lib/forms';
-import { pageMatrix } from '../lib/geometry';
+import { pageMatrix, type Box } from '../lib/geometry';
+import { loadSignatures, storeSignatures, type SavedSignature, type SignatureRole } from '../lib/signatures';
 import { CSS_UNITS, resolveDest, type OutlineNode } from '../lib/pdf';
 import { openExternal } from '../lib/platform';
 import { makeMatcher, searchDocument, type SearchHit } from '../lib/search';
@@ -23,6 +24,12 @@ import { readSelection } from '../lib/selection';
 import type { ThemePref } from '../lib/theme';
 import { clampScale, stepZoom, type DocTab, type DocView, type LinkTarget, type Zoom } from '../lib/view';
 import { AnnotateBar, TOOL_KEYS } from './AnnotateBar';
+import type { DigitalSignPlan } from './DigitalSignDialog';
+import { SignatureBanner } from './SignatureBanner';
+import { SignatureDialog } from './SignatureDialog';
+// Digital IDs pull in the crypto library, so the dialog loads when first opened.
+const DigitalSignDialog = lazy(() => import('./DigitalSignDialog').then((m) => ({ default: m.DigitalSignDialog })));
+import { SignMenu } from './SignMenu';
 import type { FormApi, FormUi } from './FormLayer';
 import { FormsBar } from './FormsBar';
 import type { OrganizeApi, OutputPart } from './OrganizeView';
@@ -56,6 +63,8 @@ interface Props {
   annotateOpen: boolean;
   organizeOpen: boolean;
   formsOpen: boolean;
+  /** Changes when the toolbar's Sign button is pressed. */
+  signNonce: number;
   organizeApi: React.RefObject<OrganizeApi | null>;
   styles: Styles;
   author: string;
@@ -72,6 +81,8 @@ interface Props {
   onOpenNew: (name: string, base: Uint8Array, items: Annotation[], defs: FieldDef[], fields: FieldValues) => void;
   onSaveParts: (makeParts: () => Promise<OutputPart[]>) => Promise<void>;
   onError: (message: string) => void;
+  /** Sign with a digital ID: placement null = invisible signature. */
+  onDigitalSign: (plan: DigitalSignPlan, placement: { page: number; box: Box; fieldName?: string } | null) => void;
   onToggleSidebar: () => void;
   onSidebarPanel: (panel: SidebarPanel) => void;
   onToggleNight: () => void;
@@ -276,6 +287,12 @@ export function DocumentView(props: Props) {
       setCommentId(id);
       if (id) setSelectedId(id);
     },
+    placeBox(page, box) {
+      const plan = digitalPlanRef.current;
+      setTool('select');
+      setDigitalPlan(null);
+      if (plan) props.onDigitalSign(plan, { page, box });
+    },
   };
   const stableApi = useMemo<AnnotApi>(
     () => ({
@@ -285,13 +302,102 @@ export function DocumentView(props: Props) {
       select: (id) => api.current.select(id),
       editText: (id) => api.current.editText(id),
       openComment: (id) => api.current.openComment(id),
+      placeBox: (page, box) => api.current.placeBox(page, box),
     }),
     [],
   );
 
+  // ----- signatures -----
+  const [signatures, setSignatures] = useState<SavedSignature[]>(loadSignatures);
+  const [signMenuOpen, setSignMenuOpen] = useState(false);
+  const [sigDialog, setSigDialog] = useState<SignatureRole | null>(null);
+  const [pendingImage, setPendingImage] = useState<ToolStyle['image'] | null>(null);
+  /** A "Sign here" field being filled: the signature goes into its box. */
+  const [signTarget, setSignTarget] = useState<{ page: number; box: Box; fieldName?: string } | null>(null);
+  const [digitalOpen, setDigitalOpen] = useState(false);
+  /** Unlocked ID waiting for the user to mark where the signature goes. */
+  const [digitalPlan, setDigitalPlan] = useState<DigitalSignPlan | null>(null);
+  const digitalPlanRef = useRef(digitalPlan);
+  digitalPlanRef.current = digitalPlan;
+  const locked = !!tab.readOnly; // signed or encrypted: no edits, but signed files can still be signed again
+  const lockedRef = useRef(locked);
+  lockedRef.current = locked;
+
+  const onDigitalReady = (plan: DigitalSignPlan) => {
+    setDigitalOpen(false);
+    if (signTarget?.fieldName) {
+      props.onDigitalSign(plan, { page: signTarget.page, box: signTarget.box, fieldName: signTarget.fieldName });
+      setSignTarget(null);
+    } else if (!plan.visible) {
+      props.onDigitalSign(plan, null);
+    } else {
+      setDigitalPlan(plan);
+      setTool('sigbox');
+      setSelectedId(null);
+    }
+  };
+
+  useEffect(() => {
+    if (props.signNonce) setSignMenuOpen(true);
+  }, [props.signNonce]);
+
+  const placeSignature = (sig: SavedSignature) => {
+    setSignMenuOpen(false);
+    const image = { src: sig.src, width: sig.width, height: sig.height, role: sig.role };
+    if (signTarget) {
+      // Fit inside the field, keeping the signature's shape, centred.
+      const { box } = signTarget;
+      const bw = box.x2 - box.x1;
+      const bh = box.y2 - box.y1;
+      const scale = Math.min(bw / sig.width, bh / sig.height) * 0.92;
+      const w = sig.width * scale;
+      const h = sig.height * scale;
+      const cx = (box.x1 + box.x2) / 2;
+      const cy = (box.y1 + box.y2) / 2;
+      const now = new Date().toISOString();
+      const a: Annotation = {
+        id: newId(),
+        kind: 'image',
+        page: signTarget.page,
+        src: sig.src,
+        role: sig.role,
+        box: { x1: cx - w / 2, y1: cy - h / 2, x2: cx + w / 2, y2: cy + h / 2 },
+        color: '#111111',
+        opacity: 1,
+        comment: '',
+        author: props.author,
+        created: now,
+        modified: now,
+      };
+      finalizePending();
+      onAnnots((s) => commitItems(s, [...s.items, a]));
+      setSignTarget(null);
+      return;
+    }
+    setPendingImage(image);
+    setTool('image');
+    setSelectedId(null);
+  };
+
+  const onSignatureMade = (sig: SavedSignature, remember: boolean) => {
+    setSigDialog(null);
+    if (remember) {
+      const next = [sig, ...signatures].slice(0, 12);
+      if (storeSignatures(next)) setSignatures(next);
+      else props.onError("Couldn't save the signature on this device (storage is full or blocked). It's used just this once.");
+    }
+    placeSignature(sig);
+  };
+
+  const removeSignature = (id: string) => {
+    const next = signatures.filter((s) => s.id !== id);
+    storeSignatures(next);
+    setSignatures(next);
+  };
+
   // Style shown in the bar: the selected annotation's, or the current tool's defaults.
   const { styles } = props;
-  const styleKind: AnnotKind | null = selected ? selected.kind : tool === 'select' ? null : tool;
+  const styleKind: AnnotKind | null = selected ? selected.kind : tool === 'select' ? null : tool === 'date' ? 'text' : tool === 'sigbox' ? 'rect' : tool;
   const kindStyle = styleKind ? styles.kinds[styleKind] : styles.kinds.highlight;
   const toolStyle: ToolStyle = useMemo(
     () => ({
@@ -300,8 +406,9 @@ export function DocumentView(props: Props) {
       width: selected && 'width' in selected ? selected.width : kindStyle.width,
       fontSize: selected?.kind === 'text' ? selected.fontSize : styles.fontSize,
       stamp: styles.stamp,
+      image: pendingImage ?? undefined,
     }),
-    [selected, kindStyle, styles.fontSize, styles.stamp],
+    [selected, kindStyle, styles.fontSize, styles.stamp, pendingImage],
   );
 
   const changeStyle = (patch: Partial<ToolStyle>) => {
@@ -460,6 +567,12 @@ export function DocumentView(props: Props) {
       setValue: (name: string, value: FieldValue) =>
         onAnnotsRef.current((s) => (s.fields[name] === value ? s : commitForm(s, { fields: { ...s.fields, [name]: value } }))),
       selectDef: (id) => setSelectedDefId(id),
+      signField: (page, box, name) => {
+        setSignTarget({ page, box, fieldName: name });
+        // A signed file can only take digital signatures; otherwise offer the menu.
+        if (lockedRef.current) setDigitalOpen(true);
+        else setSignMenuOpen(true);
+      },
       createDef: (def: FieldDef) => {
         onAnnotsRef.current((s) => commitForm(s, { defs: [...s.defs, def] }));
         setSelectedDefId(def.id);
@@ -510,12 +623,13 @@ export function DocumentView(props: Props) {
       values,
       highlight: highlightFields,
       designing: props.formsOpen,
+      locked: !!tab.readOnly,
       tool: formTool,
       selectedDefId,
       newDef,
       api: formApi,
     }),
-    [values, highlightFields, props.formsOpen, formTool, selectedDefId, newDef, formApi],
+    [values, highlightFields, props.formsOpen, tab.readOnly, formTool, selectedDefId, newDef, formApi],
   );
 
   const clearForm = () => {
@@ -544,6 +658,10 @@ export function DocumentView(props: Props) {
       const page = viewRef.current.page;
       if ((e.key === 'Delete' || e.key === 'Backspace') && k.selectedDefId) deleteDefRef.current(k.selectedDefId);
       else if (e.key === 'Escape' && k.selectedDefId) setSelectedDefId(null);
+      else if (e.key === 'Escape' && digitalPlanRef.current) {
+        setDigitalPlan(null);
+        setTool('select');
+      }
       else if ((e.key === 'Delete' || e.key === 'Backspace') && k.selectedId) stableApi.remove(k.selectedId);
       else if (e.key === 'Escape' && k.selectedId) stableApi.select(null);
       else if (e.key === 'Escape' && k.tool !== 'select') setTool('select');
@@ -583,6 +701,7 @@ export function DocumentView(props: Props) {
         formsOpen={props.formsOpen}
         organizeOpen={props.organizeOpen}
         canEdit={!tab.readOnly}
+        canSign={!tab.readOnly || tab.signed}
         dirty={props.dirty}
         night={props.night}
         theme={props.theme}
@@ -600,6 +719,10 @@ export function DocumentView(props: Props) {
         }}
         onToggleAnnotate={props.onToggleAnnotate}
         onToggleForms={props.onToggleForms}
+        onSign={() => {
+          setSignTarget(null);
+          setSignMenuOpen((v) => !v);
+        }}
         onToggleOrganize={props.onToggleOrganize}
         onCompress={props.onCompress}
         onSave={props.onSave}
@@ -656,9 +779,11 @@ export function DocumentView(props: Props) {
             <input type="checkbox" checked={highlightFields} onChange={(e) => setHighlightFields(e.target.checked)} />
             Highlight fields
           </label>
-          <button className="plain-btn small" onClick={clearForm}>
-            Clear form
-          </button>
+          {!locked && (
+            <button className="plain-btn small" onClick={clearForm}>
+              Clear form
+            </button>
+          )}
         </div>
       )}
       {props.annotateOpen && !props.organizeOpen && !props.formsOpen && (
@@ -683,6 +808,65 @@ export function DocumentView(props: Props) {
           onRedo={() => onAnnots(redo)}
           onDelete={() => selectedId && stableApi.remove(selectedId)}
           onComment={() => selectedId && stableApi.openComment(selectedId)}
+        />
+      )}
+      {tab.signed && <SignatureBanner signatures={tab.signatures} checking={!tab.signatures} />}
+      {signMenuOpen && (
+        <SignMenu
+          signatures={signatures}
+          forField={!!signTarget}
+          canDigitallySign={!tab.readOnly || tab.signed}
+          visualAllowed={!locked}
+          onPick={placeSignature}
+          onNew={(role) => {
+            setSignMenuOpen(false);
+            setSigDialog(role);
+          }}
+          onDate={() => {
+            setSignMenuOpen(false);
+            setTool('date');
+            setSelectedId(null);
+          }}
+          onDelete={removeSignature}
+          onDigital={() => {
+            setSignMenuOpen(false);
+            setDigitalOpen(true);
+          }}
+          onClose={() => {
+            setSignMenuOpen(false);
+            setSignTarget(null);
+          }}
+        />
+      )}
+      {digitalOpen && (
+        <Suspense fallback={null}>
+          <DigitalSignDialog
+            signatures={signatures}
+            forField={!!signTarget?.fieldName}
+            onReady={onDigitalReady}
+            onClose={() => {
+              setDigitalOpen(false);
+              setSignTarget(null);
+            }}
+          />
+        </Suspense>
+      )}
+      {digitalPlan && (
+        <div className="place-hint" role="status">
+          Drag a box where your signature should go, or click to use the usual size.
+          <button className="plain-btn small" onClick={() => { setDigitalPlan(null); setTool('select'); }}>
+            Cancel
+          </button>
+        </div>
+      )}
+      {sigDialog && (
+        <SignatureDialog
+          role={sigDialog}
+          onDone={onSignatureMade}
+          onClose={() => {
+            setSigDialog(null);
+            setSignTarget(null);
+          }}
         />
       )}
       <div

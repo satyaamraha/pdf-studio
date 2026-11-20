@@ -8,7 +8,10 @@ import { PasswordDialog, type PasswordRequest } from './components/PasswordDialo
 import type { SidebarPanel } from './components/Sidebar';
 import { commitDocument, initialDocState, isDirty, redo, undo, type Annotation, type DocState } from './lib/annotations';
 import { getOutline, getPageSizes, loadPdf } from './lib/pdf';
-import { hasStudioMarker, isEncrypted } from './lib/pdfBytes';
+import { hasSignatures, hasStudioMarker, isEncrypted } from './lib/pdfBytes';
+import { dataUrlToBytes } from './lib/signatures';
+import type { DigitalSignPlan } from './components/DigitalSignDialog';
+import type { Box } from './lib/geometry';
 import type { FieldDef, FieldValues } from './lib/forms';
 import { remapAnnotations, remapByPage, type PageSlot } from './lib/pagePlan';
 // pdf-lib (saving, page edits) loads on first use rather than at start-up.
@@ -59,6 +62,7 @@ const DEFAULT_STYLES: Styles = {
     arrow: { color: '#ff6b6b', opacity: 1, width: 2 },
     text: { color: '#212529', opacity: 1, width: 1 },
     stamp: { color: '#ff6b6b', opacity: 1, width: 2 },
+    image: { color: '#111111', opacity: 1, width: 1 },
   },
   fontSize: 14,
   stamp: 'APPROVED',
@@ -113,6 +117,7 @@ export default function App() {
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
   const [organizeOpen, setOrganizeOpen] = useState(false);
   const [formsOpen, setFormsOpen] = useState(false);
+  const [signNonce, setSignNonce] = useState(0);
   const [compressOpen, setCompressOpen] = useState(false);
   const organizeApi = useRef<OrganizeApi | null>(null);
 
@@ -147,6 +152,8 @@ export default function App() {
       fields?: FieldValues;
       encrypted: boolean;
       unsaved?: boolean;
+      /** Digitally signed: kept exactly as it is, and its signatures get checked. */
+      signed?: boolean;
     }) => {
       // PDF.js takes ownership of the bytes it is given, so give it a copy.
       const doc = await loadPdf(
@@ -167,10 +174,23 @@ export default function App() {
         view: { zoom: 'page-width', scale: 1, rotation: 0, page: 0 },
         annots: initialDocState(opts.base, opts.items, opts.unsaved, opts.fields, opts.defs),
         docBase: opts.base,
-        readOnly: opts.encrypted ? 'Encrypted PDFs can be read but not changed or saved yet.' : null,
+        readOnly: opts.encrypted
+          ? 'Encrypted PDFs can be read but not changed or saved yet.'
+          : opts.signed
+            ? 'This document is digitally signed. Changing it would break the signature, so it can only take more digital signatures.'
+            : null,
+        signed: !!opts.signed,
+        signatures: null,
       };
       setTabs((ts) => [...ts, tab]);
       setActiveId(tab.id);
+      if (opts.signed) {
+        // Check the signatures in the background.
+        void import('./lib/pdfVerify')
+          .then(({ verifySignatures }) => verifySignatures(opts.base))
+          .catch(() => [])
+          .then((signatures) => setTabs((ts) => ts.map((t) => (t.id === tab.id ? { ...t, signatures } : t))));
+      }
       return true;
     },
     [],
@@ -278,14 +298,16 @@ export default function App() {
         let items: Annotation[] = [];
         let defs: FieldDef[] = [];
         let fields: FieldValues = {};
-        if (!encrypted && hasStudioMarker(file.data)) {
+        const signed = !encrypted && hasSignatures(file.data);
+        // Signed files must stay byte-for-byte as they are, so nothing is taken out of them.
+        if (!encrypted && !signed && hasStudioMarker(file.data)) {
           try {
             ({ base, items, defs, fields } = await (await pdfWrite()).extractStudioAnnotations(file.data));
           } catch {
             /* unreadable by pdf-lib: show the file as it is */
           }
         }
-        await addTab({ name: file.name, path: file.path, handle: file.handle, base, items, defs, fields, encrypted });
+        await addTab({ name: file.name, path: file.path, handle: file.handle, base, items, defs, fields, encrypted, signed });
       } catch (err) {
         setToast(`Couldn't open “${file.name}”. ${errorText(err)}`);
       } finally {
@@ -419,6 +441,64 @@ export default function App() {
     }
   }, []);
 
+  /**
+   * Signs a document with a digital ID and saves the signed copy as a new file, which
+   * then opens in its own tab. The original tab is left as it was.
+   */
+  const signTab = useCallback(
+    async (id: string, plan: DigitalSignPlan, placement: { page: number; box: Box; fieldName?: string } | null) => {
+      const tab = tabsRef.current.find((t) => t.id === id);
+      if (!tab) return;
+      const stem = tab.name.replace(/\.pdf$/i, '').replace(/ \(signed\)$/i, '');
+      let name = `${stem} (signed).pdf`;
+      let path: string | undefined;
+      let handle: FileSystemFileHandle | undefined;
+      try {
+        // Ask where to save first: browsers only allow the dialog right after a click.
+        if (isTauri) {
+          const dir = tab.path ? tab.path.slice(0, Math.max(tab.path.lastIndexOf('/'), tab.path.lastIndexOf('\\')) + 1) : '';
+          const chosen = await chooseSavePath(dir + name);
+          if (!chosen) return;
+          path = isPdfName(chosen) ? chosen : `${chosen}.pdf`;
+          name = basenameOf(path);
+        } else if (canAccessFiles) {
+          const chosen = await chooseSaveHandle(name);
+          if (!chosen) return;
+          handle = chosen;
+          name = chosen.name;
+        }
+        setLoading((n) => n + 1);
+        let signed: Uint8Array;
+        try {
+          const { signPdf } = await import('./lib/pdfSign');
+          const { items, base, defs, fields } = tab.annots;
+          // A signed file is signed again as it is (keeping its signatures); otherwise the current version is written first.
+          const source = tab.signed ? base : await (await pdfWrite()).buildPdf(base, items, defs, fields, { objectStreams: false });
+          signed = await signPdf(source, {
+            key: plan.unlocked.key,
+            chain: plan.unlocked.chain,
+            signerName: plan.id.name,
+            reason: plan.reason || undefined,
+            location: plan.location || undefined,
+            placement: placement ? { page: placement.page, box: placement.box } : null,
+            fieldName: placement?.fieldName,
+            imagePng: plan.picture ? dataUrlToBytes(plan.picture.src) : undefined,
+          });
+          if (isTauri && path) await writePath(path, signed);
+          else if (handle) await writeHandle(handle, signed);
+          else downloadFile(signed, name);
+        } finally {
+          setLoading((n) => n - 1);
+        }
+        await addTab({ name, path, handle, base: signed, items: [], encrypted: false, signed: true });
+        setToast(`Signed and saved as “${name}”.`);
+      } catch (err) {
+        setToast(`Couldn't sign the document. ${errorText(err)}`);
+      }
+    },
+    [addTab],
+  );
+
   const requestCloseTab = useCallback(
     (id: string) => {
       const tab = tabsRef.current.find((t) => t.id === id);
@@ -489,6 +569,8 @@ export default function App() {
         if (isTyping(document.activeElement)) return void document.execCommand(cmd);
         if (organizeOpen && organizeApi.current) return organizeApi.current[cmd]();
         return tab && updateAnnots(tab.id, cmd === 'undo' ? undo : redo);
+      case 'sign':
+        return tab && !tab.readOnly && setSignNonce((n) => n + 1);
       case 'forms':
         setAnnotateOpen(false);
         return tab && setFormsOpen((v) => !v);
@@ -713,6 +795,7 @@ export default function App() {
           onAuthor={setAuthor}
           onSave={() => void saveTab(active.id)}
           formsOpen={formsOpen}
+          signNonce={signNonce}
           // Annotating and placing form fields use the page differently: one at a time.
           onToggleAnnotate={() => {
             setAnnotateOpen((v) => !v);
@@ -729,6 +812,7 @@ export default function App() {
             void openGenerated(name, base, items, defs, fields);
           }}
           onSaveParts={saveParts}
+          onDigitalSign={(plan, placement) => void signTab(active.id, plan, placement)}
           onError={setToast}
           onToggleSidebar={() => setSidebarOpen((v) => !v)}
           onSidebarPanel={setSidebarPanel}

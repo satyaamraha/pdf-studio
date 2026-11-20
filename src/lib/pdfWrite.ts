@@ -27,6 +27,7 @@ import type { FieldDef, FieldValues } from './forms';
 import { extractStudioFields, writeForm } from './pdfForms';
 import { collectGarbage } from './pdfPages';
 import { hasStudioMarker, STUDIO_KEY } from './pdfBytes';
+import { dataUrlToBytes } from './signatures';
 import { textWidth, toWinAnsi } from './textMetrics';
 
 /**
@@ -90,14 +91,21 @@ export async function buildPdf(
   items: Annotation[],
   defs: FieldDef[] = [],
   fields: FieldValues = {},
+  /** Signing appends to the file, which needs a plain cross-reference table. */
+  opts: { objectStreams?: boolean } = {},
 ): Promise<Uint8Array> {
   const pdf = await PDFDocument.load(base, { updateMetadata: false });
   await writeForm(pdf, defs, fields);
   const pages = pdf.getPages();
+  // Each distinct signature picture is embedded once, however often it's used.
+  const images = new Map<string, PDFRef>();
+  for (const a of items) {
+    if (a.kind === 'image' && pages[a.page] && !images.has(a.src)) images.set(a.src, (await pdf.embedPng(dataUrlToBytes(a.src))).ref);
+  }
   for (const a of items) {
     const page = pages[a.page];
     if (!page) continue;
-    const ref = pdf.context.register(annotationDict(pdf.context, page.ref, a));
+    const ref = pdf.context.register(annotationDict(pdf.context, page.ref, a, images));
     let annots = page.node.Annots();
     if (!annots) {
       annots = pdf.context.obj([]) as PDFArray;
@@ -105,7 +113,7 @@ export async function buildPdf(
     }
     annots.push(ref);
   }
-  return pdf.save({ useObjectStreams: true, updateFieldAppearances: false });
+  return pdf.save({ useObjectStreams: opts.objectStreams ?? true, updateFieldAppearances: false });
 }
 
 // ----- Building annotation dictionaries -----
@@ -179,7 +187,7 @@ interface Built {
   contents: string;
 }
 
-function build(a: Annotation): Built {
+function build(a: Annotation, images: Map<string, PDFRef>): Built {
   const color = rgb(a.color);
   const box = annotBox(a);
   const multiply = { ExtGState: { GS0: { Type: 'ExtGState', BM: 'Multiply', CA: a.opacity, ca: a.opacity } } };
@@ -317,6 +325,18 @@ function build(a: Annotation): Built {
         contents: a.text,
       };
     }
+    case 'image': {
+      const b = a.box;
+      const ref = images.get(a.src);
+      return {
+        subtype: 'Stamp',
+        rect: b,
+        content: ref ? `/GS0 gs q ${n(b.x2 - b.x1)} 0 0 ${n(b.y2 - b.y1)} ${n(b.x1)} ${n(b.y1)} cm /Im0 Do Q` : '',
+        resources: { ...alpha, ...(ref ? { XObject: { Im0: ref } } : {}) },
+        extra: { Name: a.role === 'initials' ? 'Initials' : 'SignHere' },
+        contents: a.comment || (a.role === 'initials' ? 'Initials' : 'Signature'),
+      };
+    }
     case 'stamp': {
       const b = a.box;
       const w = b.x2 - b.x1;
@@ -342,8 +362,8 @@ function build(a: Annotation): Built {
   }
 }
 
-function annotationDict(context: PDFContext, pageRef: PDFRef, a: Annotation): PDFDict {
-  const built = build(a);
+function annotationDict(context: PDFContext, pageRef: PDFRef, a: Annotation, images: Map<string, PDFRef>): PDFDict {
+  const built = build(a, images);
   const r = built.rect;
   const rect = [r.x1, r.y1, r.x2, r.y2].map((v) => Math.round(v * 1000) / 1000);
   const appearance = context.register(

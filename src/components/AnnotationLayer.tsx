@@ -19,7 +19,8 @@ import {
   type TextAnnot,
   type Tool,
 } from '../lib/annotations';
-import { apply, invert, transformBox, type Matrix, type Point } from '../lib/geometry';
+import { apply, invert, transformBox, type Box, type Matrix, type Point } from '../lib/geometry';
+import { todayText } from '../lib/signatures';
 import { textWidth, wrapText } from '../lib/textMetrics';
 
 export interface ToolStyle {
@@ -28,6 +29,8 @@ export interface ToolStyle {
   width: number;
   fontSize: number;
   stamp: string;
+  /** The signature or initials waiting to be placed (Signature tool). */
+  image?: { src: string; width: number; height: number; role: 'signature' | 'initials' };
 }
 
 /** Callbacks from a page's annotation layer to the document. Kept stable across renders. */
@@ -39,6 +42,8 @@ export interface AnnotApi {
   select(id: string | null): void;
   editText(id: string | null): void;
   openComment(id: string | null): void;
+  /** A box was drawn with the digital-signature tool. */
+  placeBox(page: number, box: Box): void;
 }
 
 /** Document-wide annotation state every page needs. */
@@ -65,7 +70,10 @@ interface Props {
   api: AnnotApi;
 }
 
-const DRAW_TOOLS: Tool[] = ['ink', 'rect', 'ellipse', 'line', 'arrow', 'note', 'text', 'stamp'];
+const DRAW_TOOLS: Tool[] = ['ink', 'rect', 'ellipse', 'line', 'arrow', 'note', 'text', 'stamp', 'image', 'date', 'sigbox'];
+
+/** Width a placed signature starts at, in points (drag to choose another). */
+const SIGNATURE_WIDTH = { signature: 150, initials: 60 };
 
 function makeAnnot(kind: AnnotKind, page: number, style: ToolStyle, author: string): Omit<Annotation, 'kind'> & { kind: AnnotKind } {
   const now = new Date().toISOString();
@@ -101,7 +109,7 @@ function AnnotationLayerImpl({ page, items, matrix, tool, style, author, selecte
     e.stopPropagation();
     (e.target as Element).setPointerCapture?.(e.pointerId);
     const start = toPdf(e);
-    const base = makeAnnot(tool as AnnotKind, page, style, author);
+    const base = makeAnnot((tool === 'date' ? 'text' : tool === 'sigbox' ? 'rect' : tool) as AnnotKind, page, style, author);
     const points: Point[] = [start];
     const minDrag = 4 / scale;
 
@@ -135,6 +143,38 @@ function AnnotationLayerImpl({ page, items, matrix, tool, style, author, selecte
         }
         case 'note':
           return done ? { ...base, kind: 'note', x: start[0] - NOTE_SIZE / 2, y: start[1] + NOTE_SIZE / 2, opacity: 1 } : null;
+        case 'image': {
+          const img = style.image;
+          if (!img) return null;
+          const ratio = img.height / img.width;
+          // Dragging sets the width; a click uses the usual size, centred where you clicked.
+          if (dragged) {
+            const w = Math.abs(end[0] - start[0]);
+            const x1 = Math.min(start[0], end[0]);
+            const y2 = Math.max(start[1], end[1]);
+            return { ...base, kind: 'image', src: img.src, role: img.role, opacity: 1, box: { x1, y1: y2 - w * ratio, x2: x1 + w, y2 } };
+          }
+          if (!done) return null;
+          const w = SIGNATURE_WIDTH[img.role];
+          const h = w * ratio;
+          return { ...base, kind: 'image', src: img.src, role: img.role, opacity: 1, box: { x1: start[0] - w / 2, y1: start[1] - h / 2, x2: start[0] + w / 2, y2: start[1] + h / 2 } };
+        }
+        case 'sigbox': {
+          const box = dragged
+            ? normalizeBox(start[0], start[1], end[0], end[1])
+            : done
+              ? { x1: start[0] - 100, y1: start[1] - 30, x2: start[0] + 100, y2: start[1] + 30 }
+              : null;
+          return box ? { ...base, kind: 'rect', box, width: 1, color: '#3355e0', opacity: 1 } : null;
+        }
+        case 'date': {
+          if (!done) return null;
+          const text = todayText();
+          const fs = 12;
+          const w = textWidth(text, fs) + TEXT_PADDING * 2 + 2;
+          const h = fs * TEXT_LINE_HEIGHT + TEXT_PADDING * 2;
+          return { ...base, kind: 'text', text, fontSize: fs, opacity: 1, color: '#111111', box: { x1: start[0], y1: start[1] - h / 2, x2: start[0] + w, y2: start[1] + h / 2 } };
+        }
         case 'stamp': {
           if (!done) return null;
           const { width, height } = stampSize(style.stamp);
@@ -159,7 +199,8 @@ function AnnotationLayerImpl({ page, items, matrix, tool, style, author, selecte
       window.removeEventListener('pointerup', up);
       setDraft(null);
       const a = shapeFor(toPdf(ev), true);
-      if (a) api.create(a);
+      if (a && tool === 'sigbox' && 'box' in a) api.placeBox(page, a.box);
+      else if (a) api.create(a);
     };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
@@ -198,6 +239,14 @@ function AnnotationLayerImpl({ page, items, matrix, tool, style, author, selecte
       const modified = new Date().toISOString();
       if ((a.kind === 'line' || a.kind === 'arrow') && (handle === 'from' || handle === 'to')) {
         changed = { ...a, [handle]: p, modified };
+      } else if (a.kind === 'image') {
+        // Signatures keep their shape.
+        const ratio = (a.box.y2 - a.box.y1) / (a.box.x2 - a.box.x1);
+        const w = Math.max(12, Math.abs(p[0] - anchor[0]));
+        const h = w * ratio;
+        const x1 = p[0] < anchor[0] ? anchor[0] - w : anchor[0];
+        const y1 = p[1] < anchor[1] ? anchor[1] - h : anchor[1];
+        changed = { ...a, box: { x1, y1, x2: x1 + w, y2: y1 + h }, modified };
       } else if (isBoxKind(a.kind) && 'box' in a) {
         const box = normalizeBox(anchor[0], anchor[1], p[0], p[1]);
         if (box.x2 - box.x1 < 8 || box.y2 - box.y1 < 8) return;
@@ -401,6 +450,15 @@ function AnnotShape({
               {l}
             </text>
           ))}
+        </g>
+      );
+    }
+    case 'image': {
+      const { x1, y1, x2, y2 } = a.box;
+      return (
+        <g {...common} className={hit} opacity={a.opacity}>
+          <rect x={x1} y={y1} width={x2 - x1} height={y2 - y1} fill="transparent" />
+          <image href={a.src} transform={`matrix(1 0 0 -1 ${x1} ${y2})`} width={x2 - x1} height={y2 - y1} preserveAspectRatio="none" />
         </g>
       );
     }

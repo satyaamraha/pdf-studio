@@ -59,6 +59,8 @@ export interface Widget {
   drawnByPage: boolean;
   label?: string;
   def?: FieldDef;
+  /** Signature fields: already signed (has an appearance). */
+  signed?: boolean;
 }
 
 type RawAnnotation = Record<string, unknown> & { rect: number[] };
@@ -126,7 +128,7 @@ export function widgetFromAnnotation(a: RawAnnotation): Widget | null {
         : { ...base, type: 'list', options, initial: list };
     }
     case 'Sig':
-      return { ...base, type: 'signature', readOnly: true, drawnByPage: true };
+      return { ...base, type: 'signature', readOnly: true, drawnByPage: true, signed: !!a.hasAppearance };
   }
   return null;
 }

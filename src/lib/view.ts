@@ -1,4 +1,5 @@
 import type { DocState } from './annotations';
+import type { SignatureInfo } from './pdfVerify';
 import type { OutlineNode, PageSize, PDFDocumentProxy } from './pdf';
 
 /** 'page-width' and 'page-fit' follow the window size; a number is a fixed scale (1 = 100%). */
@@ -31,6 +32,10 @@ export interface DocTab {
   docBase: Uint8Array;
   /** Why the document can't be saved, if it can't (e.g. encrypted). */
   readOnly: string | null;
+  /** The file has digital signatures: it's kept byte-for-byte so they stay valid. */
+  signed: boolean;
+  /** Results of checking those signatures (null while checking). */
+  signatures: SignatureInfo[] | null;
 }
 
 export const MIN_SCALE = 0.1;

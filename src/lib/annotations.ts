@@ -7,7 +7,7 @@ import { wrapText } from './textMetrics';
  * (points, y grows upwards), so they don't depend on zoom or rotation.
  */
 export type MarkupKind = 'highlight' | 'underline' | 'strike';
-export type BoxKind = 'rect' | 'ellipse' | 'text' | 'stamp';
+export type BoxKind = 'rect' | 'ellipse' | 'text' | 'stamp' | 'image';
 export type LineKind = 'line' | 'arrow';
 export type AnnotKind = MarkupKind | BoxKind | LineKind | 'ink' | 'note';
 
@@ -69,9 +69,19 @@ export interface StampAnnot extends Base {
   label: string;
 }
 
-export type Annotation = MarkupAnnot | NoteAnnot | InkAnnot | ShapeAnnot | LineAnnot | TextAnnot | StampAnnot;
+/** A handwritten signature or initials (a picture with a transparent background). */
+export interface ImageAnnot extends Base {
+  kind: 'image';
+  box: Box;
+  /** PNG as a data: URL. */
+  src: string;
+  role: 'signature' | 'initials';
+}
 
-export type Tool = 'select' | AnnotKind;
+export type Annotation = MarkupAnnot | NoteAnnot | InkAnnot | ShapeAnnot | LineAnnot | TextAnnot | StampAnnot | ImageAnnot;
+
+/** 'date' places a text box with today's date; 'sigbox' marks where a digital signature goes. */
+export type Tool = 'select' | AnnotKind | 'date' | 'sigbox';
 
 export const NOTE_SIZE = 20;
 
@@ -92,6 +102,9 @@ export const TOOL_LABELS: Record<Tool, string> = {
   arrow: 'Arrow',
   text: 'Text box',
   stamp: 'Stamp',
+  image: 'Signature',
+  date: 'Date',
+  sigbox: 'Digital signature',
 };
 
 export function isMarkup(kind: Tool): kind is MarkupKind {
@@ -99,7 +112,7 @@ export function isMarkup(kind: Tool): kind is MarkupKind {
 }
 
 export function isBoxKind(kind: Tool): kind is BoxKind {
-  return kind === 'rect' || kind === 'ellipse' || kind === 'text' || kind === 'stamp';
+  return kind === 'rect' || kind === 'ellipse' || kind === 'text' || kind === 'stamp' || kind === 'image';
 }
 
 export function hasStrokeWidth(kind: Tool): boolean {
@@ -197,6 +210,8 @@ export function describe(a: Annotation): string {
       return a.text;
     case 'stamp':
       return a.label;
+    case 'image':
+      return a.role === 'initials' ? 'Initials' : 'Signature';
     default:
       return '';
   }

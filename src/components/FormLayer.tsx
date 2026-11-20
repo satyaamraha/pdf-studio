@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState, type CSSProperties, type PointerEvent as RPointerEvent } from 'react';
-import { Check } from 'lucide-react';
+import { Check, PenLine } from 'lucide-react';
 import {
   currentValue,
   effectiveFontSize,
@@ -19,6 +19,8 @@ export interface FormApi {
   selectDef(id: string | null): void;
   createDef(def: FieldDef): void;
   updateDef(def: FieldDef): void;
+  /** An empty "Sign here" field was clicked. */
+  signField(page: number, box: Box, name: string): void;
 }
 
 /** Document-wide form state every page needs. */
@@ -27,6 +29,8 @@ export interface FormUi {
   highlight: boolean;
   /** Placing and arranging fields (the Forms bar is open). */
   designing: boolean;
+  /** Signed or encrypted: values can't be changed. */
+  locked: boolean;
   tool: 'select' | FieldKind;
   selectedDefId: string | null;
   /** Makes a def for a new field of `kind` at `box`, choosing its name and settings. */
@@ -141,7 +145,17 @@ function FormLayerImpl(p: Props) {
       onPointerDown={onPointerDown}
     >
       {widgets.map((w) =>
-        w.drawnByPage ? null : (
+        w.type === 'signature' && !w.signed && !p.designing ? (
+          <button
+            key={w.id}
+            className="field field-sign"
+            style={screen(w.box)}
+            onClick={() => p.api.signField(p.page, w.box, w.name)}
+            aria-label={`Sign here: ${w.name}`}
+          >
+            <PenLine style={{ width: '1.1em', height: '1.1em' }} /> Sign here
+          </button>
+        ) : w.drawnByPage ? null : (
           <FieldInput
             key={w.id}
             w={w}
@@ -149,7 +163,7 @@ function FormLayerImpl(p: Props) {
             scale={scale}
             value={currentValue(w, p.values)}
             // In design mode only placed fields respond, and only to dragging.
-            disabled={p.designing}
+            disabled={p.designing || p.locked}
             onChange={(v) => p.api.setValue(w.name, v)}
           />
         ),

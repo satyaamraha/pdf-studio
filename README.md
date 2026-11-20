@@ -11,7 +11,7 @@ An open-source, cross-platform PDF reader and editor: view, annotate, organize, 
 - **Rendering:** PDF.js (Apache-2.0) for pages, text layer, search and outline
 - **Page operations, forms, stamping:** pdf-lib (MIT)
 - **Text editing and true redaction:** PDFium (Apache-2.0/BSD) via WASM, added in the edit stage
-- **Digital signatures:** PAdES certificate signatures (pyHanko sidecar or a Rust/JS signer, to be decided)
+- **Digital signatures:** node-forge, used under its BSD-3-Clause licence (it's dual-licensed BSD-3-Clause or GPL-2.0; we choose BSD), for digital IDs and RSA signing; the CMS signature structure (PAdES baseline) and the incremental PDF update are written in this project
 - **OCR:** Tesseract (Apache-2.0)
 
 ## Roadmap
@@ -74,6 +74,19 @@ An open-source, cross-platform PDF reader and editor: view, annotate, organize, 
 - Add new fields (Forms button): text, checkbox, radio groups and dropdowns; move, resize, rename, set choices, font size, multi-line and required
 - Fields added in PDF Studio stay editable when the file is reopened, and follow their pages in Organize
 
+**Stage 5 (sign) is done:**
+
+- Handwritten signatures and initials: draw (mouse, trackpad, pen or finger), type (in a handwriting font already on your system), or upload a photo of your signature; the paper background is removed
+- Saved signatures for reuse (kept on this device only); place, move and resize them; add today's date
+- "Sign here" fields in forms: click to sign
+- Digital signatures with a digital ID: import a .p12/.pfx (including older Keychain/Windows exports) or create a self-signed ID; IDs stay password-protected on this device and the password is never stored; export a backup
+- Visible (with your handwritten signature, name, date, reason and location) or invisible digital signatures; sign into an existing signature field
+- Signing appends to the file (incremental update), so earlier signatures stay valid and documents can be countersigned
+- Signatures follow PAdES baseline (ETSI.CAdES.detached, SHA-256, signing-certificate-v2) and verify with OpenSSL
+- Opening a signed PDF checks every signature and shows whether it's valid, whether the document changed after signing, and who signed; signed files are protected from edits that would break them
+
+Limits for now: only RSA digital IDs can sign and be checked (most personal IDs are RSA); there's no trusted-authority (CA) check or timestamp server yet, so identities show as "not verified by a trusted authority"; signing saves a new signed copy.
+
 **Web app (PWA) is done:**
 
 - Installable from Chrome, Edge and Safari ("Install app" button, or Add to Home Screen); runs in its own window
@@ -103,6 +116,7 @@ Limits for now: form text is drawn with Helvetica, so values in non-Latin script
 | Delete selected annotation | Delete | Delete |
 | Organize pages | ⌘⇧O | Ctrl+Shift+O |
 | Forms (place fields) | ⌘⇧F | Ctrl+Shift+F |
+| Sign | ⌘⇧G | Ctrl+Shift+G |
 | Combine files / reduce file size | ⌘⌥C / ⌘⌥R | Ctrl+Alt+C / Ctrl+Alt+R |
 
 With Annotate on, single keys pick a tool: **V** select, **H** highlight, **U** underline, **K** strikethrough, **N** note, **D** draw, **R** rectangle, **O** ellipse, **L** line, **A** arrow, **T** text box, **S** stamp. **Esc** deselects, then returns to Select.
@@ -138,9 +152,11 @@ In the web UI during development, `http://localhost:1420/?file=/samples/sample.p
 - `src/lib/annotations.ts` — the annotation model (PDF coordinates) and undo history
 - `src/lib/forms.ts` — form model (values by field name, placed fields) and reading PDF.js widgets
 - `src/lib/pdfForms.ts` — writes values and placed fields into the PDF with pdf-lib, and reads placed fields back out
+- `src/lib/signatures.ts` — saved handwritten signatures; `digitalId.ts` — importing and creating digital IDs
+- `src/lib/cms.ts` — building and reading CMS signatures; `pdfSign.ts` — signing by incremental update; `pdfVerify.ts` — checking signatures
 - `src/lib/pdfPages.ts` — page operations (reorder, rotate, delete, insert, merge, extract) and compression
 - `src/lib/pdfWrite.ts` — writes annotations into the PDF with pdf-lib, and reads PDF Studio's own back out on open
-- `src/components/` — `Viewer` (scrolling and layout), `PageView` (one page: drawing, text, links, highlights), `AnnotationLayer` (drawing and editing annotations on a page), `AnnotateBar`, `CommentsPanel`, `OrganizeView`, `CompressDialog`, `FormLayer` (inputs over the page, placing fields), `FormsBar`, `Sidebar`, `Toolbar`, `SearchBar`
+- `src/components/` — `Viewer` (scrolling and layout), `PageView` (one page: drawing, text, links, highlights), `AnnotationLayer` (drawing and editing annotations on a page), `AnnotateBar`, `CommentsPanel`, `OrganizeView`, `CompressDialog`, `FormLayer` (inputs over the page, placing fields), `FormsBar`, `SignMenu`, `SignatureDialog`, `DigitalSignDialog`, `SignatureBanner`, `Sidebar`, `Toolbar`, `SearchBar`
 - `src/pwa.ts` — service worker registration, install prompt and update notice (web only)
 - `src/lib/platform.ts` — desktop vs browser: file dialogs, File System Access (save in place), drag and drop, "Open with"
 - `src-tauri/` — the desktop shell: reading and safely writing files, native menu, "Open With" handling

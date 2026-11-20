@@ -30,3 +30,8 @@ export const STUDIO_KEY = 'PDFStudio';
 export function hasStudioMarker(bytes: Uint8Array): boolean {
   return contains(bytes, encoder.encode(`/${STUDIO_KEY}`));
 }
+
+/** True if the file contains digital signatures (or at least signature data). */
+export function hasSignatures(bytes: Uint8Array): boolean {
+  return contains(bytes, encoder.encode('/ByteRange')) && contains(bytes, encoder.encode('/Sig'));
+}
