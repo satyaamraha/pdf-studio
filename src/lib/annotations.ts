@@ -242,43 +242,73 @@ export function simplifyPoints(points: Point[], minDist: number): Point[] {
 
 // ----- Undo / redo history -----
 
-export interface AnnotState {
+/** One version of a document: its file bytes (without PDF Studio annotations) and its annotations. */
+export interface Snapshot {
+  base: Uint8Array;
   items: Annotation[];
-  past: Annotation[][];
-  future: Annotation[][];
-  /** `items` as of the last save (or open). Unsaved changes exist when they differ. */
-  saved: Annotation[];
 }
 
-export function initialAnnotState(items: Annotation[]): AnnotState {
-  return { items, past: [], future: [], saved: items };
+/**
+ * The editable state of an open document. Annotation edits change `items`; page
+ * edits (reorder, delete, compress…) change `base`. Both share one undo history.
+ */
+export interface DocState extends Snapshot {
+  past: Snapshot[];
+  future: Snapshot[];
+  /** The version last saved (or opened). Unsaved changes exist when it differs. */
+  saved: Snapshot;
 }
 
-const HISTORY_LIMIT = 200;
+export function initialDocState(base: Uint8Array, items: Annotation[], unsaved = false): DocState {
+  // A brand-new document (e.g. combined files) starts unsaved.
+  const saved = unsaved ? { base: new Uint8Array(), items: [] } : { base, items };
+  return { base, items, past: [], future: [], saved };
+}
 
-/** Applies a change. With `previous`, records that snapshot (used when a drag started earlier). */
-export function commitItems(state: AnnotState, items: Annotation[], previous: Annotation[] = state.items): AnnotState {
+// Page edits keep whole copies of the file, so keep fewer of those.
+const HISTORY_LIMIT = 100;
+
+function push(past: Snapshot[], snap: Snapshot): Snapshot[] {
+  return [...past.slice(-HISTORY_LIMIT + 1), snap];
+}
+
+/** Applies an annotation change. With `previous`, records that snapshot (used when a drag started earlier). */
+export function commitItems(state: DocState, items: Annotation[], previous: Annotation[] = state.items): DocState {
   if (items === previous) return { ...state, items };
-  return { ...state, items, past: [...state.past.slice(-HISTORY_LIMIT + 1), previous], future: [] };
+  return { ...state, items, past: push(state.past, { base: state.base, items: previous }), future: [] };
+}
+
+/** Applies a change to the file itself (page edits, compression), with the annotations that go with it. */
+export function commitDocument(state: DocState, base: Uint8Array, items: Annotation[]): DocState {
+  return { ...state, base, items, past: push(state.past, { base: state.base, items: state.items }), future: [] };
 }
 
 /** Replaces items without adding an undo step (live preview while dragging). */
-export function previewItems(state: AnnotState, items: Annotation[]): AnnotState {
+export function previewItems(state: DocState, items: Annotation[]): DocState {
   return { ...state, items };
 }
 
-export function undo(state: AnnotState): AnnotState {
+export function undo(state: DocState): DocState {
   const prev = state.past[state.past.length - 1];
   if (!prev) return state;
-  return { ...state, items: prev, past: state.past.slice(0, -1), future: [state.items, ...state.future] };
+  return {
+    ...state,
+    ...prev,
+    past: state.past.slice(0, -1),
+    future: [{ base: state.base, items: state.items }, ...state.future],
+  };
 }
 
-export function redo(state: AnnotState): AnnotState {
+export function redo(state: DocState): DocState {
   const next = state.future[0];
   if (!next) return state;
-  return { ...state, items: next, past: [...state.past, state.items], future: state.future.slice(1) };
+  return { ...state, ...next, past: push(state.past, { base: state.base, items: state.items }), future: state.future.slice(1) };
 }
 
-export function isDirty(state: AnnotState): boolean {
-  return state.items !== state.saved;
+export function isDirty(state: DocState): boolean {
+  return state.items !== state.saved.items || state.base !== state.saved.base;
+}
+
+export function markSaved(state: DocState, saved: Snapshot): DocState {
+  return { ...state, saved };
 }

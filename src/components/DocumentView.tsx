@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   annotBox,
+  commitDocument,
   commitItems,
   isMarkup,
   newId,
@@ -9,7 +10,7 @@ import {
   undo,
   type Annotation,
   type AnnotKind,
-  type AnnotState,
+  type DocState,
   type Tool,
 } from '../lib/annotations';
 import { pageMatrix } from '../lib/geometry';
@@ -20,6 +21,9 @@ import { readSelection } from '../lib/selection';
 import type { ThemePref } from '../lib/theme';
 import { clampScale, stepZoom, type DocTab, type DocView, type LinkTarget, type Zoom } from '../lib/view';
 import { AnnotateBar, TOOL_KEYS } from './AnnotateBar';
+import type { OrganizeApi, OutputPart } from './OrganizeView';
+// Organizing pulls in pdf-lib, so it loads when first opened.
+const OrganizeView = lazy(() => import('./OrganizeView').then((m) => ({ default: m.OrganizeView })));
 import type { AnnotApi, AnnotUi, ToolStyle } from './AnnotationLayer';
 import { SearchBar } from './SearchBar';
 import { Sidebar, type SidebarPanel } from './Sidebar';
@@ -46,15 +50,22 @@ interface Props {
   theme: ThemePref;
   findNonce: number;
   annotateOpen: boolean;
+  organizeOpen: boolean;
+  organizeApi: React.RefObject<OrganizeApi | null>;
   styles: Styles;
   author: string;
   dirty: boolean;
   onView: (patch: Partial<DocView>) => void;
-  onAnnots: (update: (s: AnnotState) => AnnotState) => void;
+  onAnnots: (update: (s: DocState) => DocState) => void;
   onStyles: (update: (s: Styles) => Styles) => void;
   onAuthor: (name: string) => void;
   onSave: () => void;
   onToggleAnnotate: () => void;
+  onToggleOrganize: () => void;
+  onCompress: () => void;
+  onOpenNew: (name: string, base: Uint8Array, items: Annotation[]) => void;
+  onSaveParts: (makeParts: () => Promise<OutputPart[]>) => Promise<void>;
+  onError: (message: string) => void;
   onToggleSidebar: () => void;
   onSidebarPanel: (panel: SidebarPanel) => void;
   onToggleNight: () => void;
@@ -384,13 +395,14 @@ export function DocumentView(props: Props) {
     [doc],
   );
 
-  const keyState = useRef({ tool, selectedId, searchOpen, annotateOpen: props.annotateOpen, readOnly: tab.readOnly });
-  keyState.current = { tool, selectedId, searchOpen, annotateOpen: props.annotateOpen, readOnly: tab.readOnly };
+  const keyState = useRef({ tool, selectedId, searchOpen, annotateOpen: props.annotateOpen, readOnly: tab.readOnly, organizing: props.organizeOpen });
+  keyState.current = { tool, selectedId, searchOpen, annotateOpen: props.annotateOpen, readOnly: tab.readOnly, organizing: props.organizeOpen };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (isTyping(e.target) || e.metaKey || e.ctrlKey || e.altKey) return;
       const k = keyState.current;
+      // The organize view has its own keys.
+      if (k.organizing || isTyping(e.target) || e.metaKey || e.ctrlKey || e.altKey) return;
       const page = viewRef.current.page;
       if ((e.key === 'Delete' || e.key === 'Backspace') && k.selectedId) stableApi.remove(k.selectedId);
       else if (e.key === 'Escape' && k.selectedId) stableApi.select(null);
@@ -428,6 +440,8 @@ export function DocumentView(props: Props) {
         sidebarOpen={props.sidebarOpen}
         searchOpen={searchOpen}
         annotateOpen={props.annotateOpen}
+        organizeOpen={props.organizeOpen}
+        canEdit={!tab.readOnly}
         dirty={props.dirty}
         night={props.night}
         theme={props.theme}
@@ -444,11 +458,37 @@ export function DocumentView(props: Props) {
           }
         }}
         onToggleAnnotate={props.onToggleAnnotate}
+        onToggleOrganize={props.onToggleOrganize}
+        onCompress={props.onCompress}
         onSave={props.onSave}
         onToggleNight={props.onToggleNight}
         onCycleTheme={props.onCycleTheme}
       />
-      {props.annotateOpen && (
+      {props.organizeOpen && tab.docBase !== tab.annots.base && <div className="organize-loading">Updating pages…</div>}
+      {props.organizeOpen && tab.docBase === tab.annots.base && (
+        <Suspense fallback={<div className="organize-loading">Loading…</div>}>
+        <OrganizeView
+          // A fresh grid whenever the document changes underneath.
+          key={tab.annots.base.length + ':' + sizes.length}
+          name={tab.name}
+          doc={doc}
+          base={tab.annots.base}
+          items={items}
+          sizes={sizes}
+          apiRef={props.organizeApi}
+          onApply={(base, nextItems) => {
+            finalizePending();
+            onAnnots((s) => commitDocument(s, base, nextItems));
+            props.onToggleOrganize();
+          }}
+          onClose={props.onToggleOrganize}
+          onOpenNew={props.onOpenNew}
+          onSaveParts={props.onSaveParts}
+          onError={props.onError}
+        />
+        </Suspense>
+      )}
+      {props.annotateOpen && !props.organizeOpen && (
         <AnnotateBar
           tool={tool}
           style={toolStyle}
@@ -472,7 +512,12 @@ export function DocumentView(props: Props) {
           onComment={() => selectedId && stableApi.openComment(selectedId)}
         />
       )}
-      <div className="document-body" onPointerDownCapture={onPointerDownCapture} onPointerUp={onPointerUp}>
+      <div
+        className="document-body"
+        hidden={props.organizeOpen}
+        onPointerDownCapture={onPointerDownCapture}
+        onPointerUp={onPointerUp}
+      >
         {props.sidebarOpen && (
           <Sidebar
             doc={doc}

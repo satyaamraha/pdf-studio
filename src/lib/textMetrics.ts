@@ -1,13 +1,14 @@
-import { Encodings, FontNames } from '@pdf-lib/standard-fonts';
-import { StandardFontEmbedder } from 'pdf-lib';
+import { Encodings, Font, FontNames } from '@pdf-lib/standard-fonts';
 
 /**
  * Text boxes and stamps are saved with the PDF standard fonts (Helvetica), which
  * every PDF reader has. Measuring with the same font metrics on screen and in the
  * saved file means lines wrap in the same places.
  */
-const regular = StandardFontEmbedder.for(FontNames.Helvetica);
-const bold = StandardFontEmbedder.for(FontNames.HelveticaBold);
+let regular: Font | null = null;
+let bold: Font | null = null;
+const fontFor = (isBold: boolean) =>
+  isBold ? (bold ??= Font.load(FontNames.HelveticaBold)) : (regular ??= Font.load(FontNames.Helvetica));
 
 /** Replaces characters the standard fonts can't draw (they cover Western European text). */
 export function toWinAnsi(text: string): string {
@@ -19,8 +20,18 @@ export function toWinAnsi(text: string): string {
   return out;
 }
 
+/** Width of `text` in points, with kerning (same method as pdf-lib). */
 export function textWidth(text: string, size: number, isBold = false): number {
-  return (isBold ? bold : regular).widthOfTextAtSize(toWinAnsi(text).replace(/\n/g, ''), size);
+  const font = fontFor(isBold);
+  const names: string[] = [];
+  for (const ch of toWinAnsi(text).replace(/\n/g, '')) {
+    names.push(Encodings.WinAnsi.encodeUnicodeCodePoint(ch.codePointAt(0)!).name);
+  }
+  let total = 0;
+  for (let i = 0; i < names.length; i++) {
+    total += (font.getWidthOfGlyph(names[i]) || 250) + (names[i + 1] ? font.getXAxisKerningForPair(names[i], names[i + 1]) || 0 : 0);
+  }
+  return (total * size) / 1000;
 }
 
 /** Splits text into lines that fit `maxWidth`, honouring explicit line breaks. */
@@ -48,8 +59,4 @@ export function wrapText(text: string, size: number, maxWidth: number): string[]
     lines.push(line.trimEnd());
   }
   return lines;
-}
-
-export function encodeHelvetica(text: string, isBold = false): string {
-  return (isBold ? bold : regular).encodeText(toWinAnsi(text)).toString();
 }

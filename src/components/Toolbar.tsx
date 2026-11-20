@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import {
   ChevronLeft,
   ChevronRight,
+  LayoutGrid,
+  Minimize2,
   Minus,
   Moon,
   PanelLeft,
@@ -25,6 +27,8 @@ interface Props {
   sidebarOpen: boolean;
   searchOpen: boolean;
   annotateOpen: boolean;
+  organizeOpen: boolean;
+  canEdit: boolean;
   dirty: boolean;
   night: boolean;
   theme: ThemePref;
@@ -35,6 +39,8 @@ interface Props {
   onRotate: () => void;
   onToggleSearch: () => void;
   onToggleAnnotate: () => void;
+  onToggleOrganize: () => void;
+  onCompress: () => void;
   onSave: () => void;
   onToggleNight: () => void;
   onCycleTheme: () => void;
@@ -131,12 +137,25 @@ export function Toolbar(p: Props) {
       </button>
 
       <button
-        className={`icon-btn wide${p.annotateOpen ? ' on' : ''}`}
+        className={`icon-btn wide${p.annotateOpen && !p.organizeOpen ? ' on' : ''}`}
         onClick={p.onToggleAnnotate}
         title="Annotate"
         aria-pressed={p.annotateOpen}
+        disabled={p.organizeOpen}
       >
         <PenLine size={17} /> <span>Annotate</span>
+      </button>
+      <button
+        className={`icon-btn wide${p.organizeOpen ? ' on' : ''}`}
+        onClick={p.onToggleOrganize}
+        title={p.canEdit ? 'Organize pages: reorder, rotate, delete, insert, extract, split' : 'Encrypted PDFs can’t be changed yet'}
+        aria-pressed={p.organizeOpen}
+        disabled={!p.canEdit}
+      >
+        <LayoutGrid size={17} /> <span>Organize</span>
+      </button>
+      <button className="icon-btn" onClick={p.onCompress} title="Reduce file size" disabled={!p.canEdit || p.organizeOpen}>
+        <Minimize2 size={17} />
       </button>
 
       <div className="spacer" />

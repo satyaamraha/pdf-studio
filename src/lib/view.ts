@@ -1,4 +1,4 @@
-import type { AnnotState } from './annotations';
+import type { DocState } from './annotations';
 import type { OutlineNode, PageSize, PDFDocumentProxy } from './pdf';
 
 /** 'page-width' and 'page-fit' follow the window size; a number is a fixed scale (1 = 100%). */
@@ -17,14 +17,18 @@ export interface DocView {
 export interface DocTab {
   id: string;
   name: string;
+  /** Where the file lives on disk (desktop). */
   path?: string;
+  /** Link to the file on disk (web app in Chrome/Edge); Save writes back to it. */
+  handle?: FileSystemFileHandle;
   doc: PDFDocumentProxy;
   sizes: PageSize[];
   outline: OutlineNode[];
   view: DocView;
-  /** The file's bytes without PDF Studio's annotations; saving adds them back. */
-  base: Uint8Array;
-  annots: AnnotState;
+  /** Annotations, the file's bytes (without PDF Studio's annotations) and undo history. */
+  annots: DocState;
+  /** The bytes `doc` was loaded from. When `annots.base` moves on (page edits, undo), the document reloads. */
+  docBase: Uint8Array;
   /** Why the document can't be saved, if it can't (e.g. encrypted). */
   readOnly: string | null;
 }

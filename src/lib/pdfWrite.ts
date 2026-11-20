@@ -1,3 +1,4 @@
+import { FontNames } from '@pdf-lib/standard-fonts';
 import {
   PDFArray,
   PDFDict,
@@ -6,6 +7,7 @@ import {
   PDFName,
   PDFRef,
   PDFString,
+  StandardFontEmbedder,
   type PDFContext,
   type PDFObject,
 } from 'pdf-lib';
@@ -21,43 +23,23 @@ import {
   type Annotation,
 } from './annotations';
 import type { Box, Point } from './geometry';
-import { encodeHelvetica, textWidth } from './textMetrics';
+import { collectGarbage } from './pdfPages';
+import { hasStudioMarker, STUDIO_KEY } from './pdfBytes';
+import { textWidth, toWinAnsi } from './textMetrics';
 
 /**
- * Every annotation PDF Studio writes carries this key with its own data as JSON,
- * so reopening the file gives back editable annotations rather than flat drawings.
+ * Every annotation PDF Studio writes carries the `/PDFStudio` key with its own data as
+ * JSON, so reopening the file gives back editable annotations rather than flat drawings.
  */
-const STUDIO_KEY = 'PDFStudio';
-const encoder = new TextEncoder();
-
-function contains(haystack: Uint8Array, needle: Uint8Array): boolean {
-  const first = needle[0];
-  let i = haystack.indexOf(first);
-  while (i !== -1 && i <= haystack.length - needle.length) {
-    let match = true;
-    for (let j = 1; j < needle.length; j++) {
-      if (haystack[i + j] !== needle[j]) {
-        match = false;
-        break;
-      }
-    }
-    if (match) return true;
-    i = haystack.indexOf(first, i + 1);
-  }
-  return false;
-}
-
-export function isEncrypted(bytes: Uint8Array): boolean {
-  return contains(bytes, encoder.encode('/Encrypt'));
-}
 
 /**
  * Pulls PDF Studio's own annotations out of a file. Returns the file without them
  * (what the viewer displays) and the annotations as editable objects.
  */
 export async function extractStudioAnnotations(bytes: Uint8Array): Promise<{ base: Uint8Array; items: Annotation[] }> {
-  // Files we save keep annotation objects uncompressed, so a byte scan finds them cheaply.
-  if (!contains(bytes, encoder.encode(`/${STUDIO_KEY}`))) return { base: bytes, items: [] };
+  // Our appearance streams carry the marker in their (never compressed) dictionary,
+  // so a byte scan tells cheaply whether there is anything to extract.
+  if (!hasStudioMarker(bytes)) return { base: bytes, items: [] };
   const pdf = await PDFDocument.load(bytes, { updateMetadata: false });
   const items: Annotation[] = [];
   pdf.getPages().forEach((page, index) => {
@@ -87,7 +69,8 @@ export async function extractStudioAnnotations(bytes: Uint8Array): Promise<{ bas
     if (keep.length !== annots.size()) page.node.set(PDFName.of('Annots'), pdf.context.obj(keep));
   });
   if (!items.length) return { base: bytes, items };
-  const base = await pdf.save({ useObjectStreams: false, updateFieldAppearances: false });
+  collectGarbage(pdf);
+  const base = await pdf.save({ useObjectStreams: true, updateFieldAppearances: false });
   return { base, items };
 }
 
@@ -106,8 +89,7 @@ export async function buildPdf(base: Uint8Array, items: Annotation[]): Promise<U
     }
     annots.push(ref);
   }
-  // No object streams: keeps our marker findable by `extractStudioAnnotations`.
-  return pdf.save({ useObjectStreams: false, updateFieldAppearances: false });
+  return pdf.save({ useObjectStreams: true, updateFieldAppearances: false });
 }
 
 // ----- Building annotation dictionaries -----
@@ -121,6 +103,16 @@ function pdfDate(iso: string): string {
   const d = new Date(iso);
   const p = (v: number) => String(v).padStart(2, '0');
   return `D:${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}Z`;
+}
+
+const embedders = new Map<boolean, StandardFontEmbedder>();
+function encodeHelvetica(text: string, isBold = false): string {
+  let e = embedders.get(isBold);
+  if (!e) {
+    e = StandardFontEmbedder.for(isBold ? FontNames.HelveticaBold : FontNames.Helvetica);
+    embedders.set(isBold, e);
+  }
+  return e.encodeText(toWinAnsi(text)).toString();
 }
 
 const HELVETICA = { Type: 'Font', Subtype: 'Type1', BaseFont: 'Helvetica', Encoding: 'WinAnsiEncoding' };
@@ -344,6 +336,8 @@ function annotationDict(context: PDFContext, pageRef: PDFRef, a: Annotation): PD
       Subtype: 'Form',
       BBox: rect,
       Resources: (built.resources ?? {}) as Literal,
+      // Streams are never packed into object streams, so this marker stays visible to `extractStudioAnnotations`.
+      [STUDIO_KEY]: true,
     }),
   );
   const { page: _page, ...data } = a;

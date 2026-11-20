@@ -6,7 +6,23 @@ export interface OpenedFile {
   name: string;
   /** Absolute path on disk (desktop only). Used to avoid opening a file twice. */
   path?: string;
+  /** Link to the file on disk (web, Chrome/Edge), so Save can write back to it. */
+  handle?: FileSystemFileHandle;
   data: Uint8Array;
+}
+
+/** Chrome/Edge let web apps open and save real files instead of uploading and downloading copies. */
+export const canAccessFiles = typeof window !== 'undefined' && typeof window.showOpenFilePicker === 'function';
+
+const PDF_TYPES: FilePickerType[] = [{ description: 'PDF documents', accept: { 'application/pdf': ['.pdf'] } }];
+
+function isAbort(err: unknown): boolean {
+  return err instanceof DOMException && err.name === 'AbortError';
+}
+
+export async function handleToOpened(handle: FileSystemFileHandle): Promise<OpenedFile> {
+  const file = await handle.getFile();
+  return { name: file.name, handle, data: new Uint8Array(await file.arrayBuffer()) };
 }
 
 function basename(path: string): string {
@@ -38,6 +54,15 @@ export async function pickPdfFiles(): Promise<OpenedFile[]> {
     });
     const paths = selected == null ? [] : Array.isArray(selected) ? selected : [selected];
     return Promise.all(paths.map(readPath));
+  }
+  if (canAccessFiles) {
+    try {
+      const handles = await window.showOpenFilePicker!({ multiple: true, types: PDF_TYPES });
+      return Promise.all(handles.map(handleToOpened));
+    } catch (err) {
+      if (isAbort(err)) return [];
+      throw err;
+    }
   }
   return new Promise((resolve) => {
     const input = document.createElement('input');
@@ -161,4 +186,69 @@ export async function quitApp(): Promise<void> {
   if (!isTauri) return;
   const { invoke } = await import('@tauri-apps/api/core');
   await invoke('exit_app');
+}
+
+/** Asks for a folder (desktop). Returns null if the user cancels. */
+export async function chooseFolder(): Promise<string | null> {
+  const { open } = await import('@tauri-apps/plugin-dialog');
+  const chosen = await open({ directory: true, multiple: false });
+  return typeof chosen === 'string' ? chosen : null;
+}
+
+// ----- web file access (Chrome/Edge) -----
+
+/** Asks where to save in the browser. Returns null if cancelled. Must run straight after a click or key press. */
+export async function chooseSaveHandle(suggestedName: string): Promise<FileSystemFileHandle | null> {
+  try {
+    return await window.showSaveFilePicker!({ suggestedName, types: PDF_TYPES });
+  } catch (err) {
+    if (isAbort(err)) return null;
+    throw err;
+  }
+}
+
+/** Writes bytes to a file the user chose, asking for permission again if the browser needs it. */
+export async function writeHandle(handle: FileSystemFileHandle, bytes: Uint8Array): Promise<void> {
+  const opts = { mode: 'readwrite' as const };
+  if (handle.queryPermission && (await handle.queryPermission(opts)) !== 'granted') {
+    if ((await handle.requestPermission?.(opts)) !== 'granted') throw new Error('Permission to save the file was not given.');
+  }
+  const writable = await handle.createWritable();
+  await writable.write(bytes as BufferSource);
+  await writable.close();
+}
+
+export async function chooseDirectoryHandle(): Promise<FileSystemDirectoryHandle | null> {
+  if (typeof window.showDirectoryPicker !== 'function') return null;
+  try {
+    return await window.showDirectoryPicker({ mode: 'readwrite' });
+  } catch (err) {
+    if (isAbort(err)) return null;
+    throw err;
+  }
+}
+
+export async function writeIntoDirectory(dir: FileSystemDirectoryHandle, name: string, bytes: Uint8Array): Promise<void> {
+  await writeHandle(await dir.getFileHandle(name, { create: true }), bytes);
+}
+
+/** Files dropped onto the page, keeping links to the originals where the browser allows. */
+export function readDroppedFiles(dt: DataTransfer): Promise<OpenedFile[]> {
+  const items = Array.from(dt.items).filter((i) => i.kind === 'file');
+  // Handles must be requested during the drop event itself.
+  const pending = items.map((item) => ({ handle: item.getAsFileSystemHandle?.(), file: item.getAsFile() }));
+  return Promise.all(
+    pending.map(async ({ handle, file }) => {
+      const h = await handle?.catch(() => null);
+      if (h && h.kind === 'file') return handleToOpened(h as FileSystemFileHandle);
+      return file ? fileToOpened(file) : null;
+    }),
+  ).then((files) => files.filter((f): f is OpenedFile => !!f && isPdfName(f.name)));
+}
+
+/** PDFs the OS asked the installed web app to open ("Open with PDF Studio"). */
+export function onLaunchFiles(handler: (files: OpenedFile[]) => void): void {
+  window.launchQueue?.setConsumer((params) => {
+    if (params.files.length) void Promise.all(params.files.map(handleToOpened)).then(handler);
+  });
 }

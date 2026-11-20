@@ -4,7 +4,7 @@ An open-source, cross-platform PDF reader and editor: view, annotate, organize, 
 
 ## Decisions
 
-- **Platforms:** macOS, Windows, Linux (desktop)
+- **Platforms:** macOS, Windows, Linux (desktop app), and any modern browser as an installable web app (PWA)
 - **License:** open source under **MIT**. Every dependency must use a permissive license (MIT, Apache-2.0, BSD). No GPL/AGPL code, so MuPDF is deliberately not used
 - **Shell:** Tauri (Rust backend, web UI, MIT/Apache-2.0) for small installers and native file access
 - **UI:** TypeScript + React
@@ -55,7 +55,26 @@ An open-source, cross-platform PDF reader and editor: view, annotate, organize, 
 - Annotations made here stay editable when the file is reopened in PDF Studio
 - Warns before closing a tab or quitting with unsaved changes
 
-Limits for now: text boxes and stamps use Helvetica, so characters outside Western European languages appear as "?" in the saved file (the text itself is kept). Encrypted PDFs can be read and annotated but not saved. Annotations made in other apps are shown but can't be edited yet.
+**Stage 3 (organize) is done:**
+
+- Organize view: a page grid with drag to reorder (several pages at once), rotate, delete, duplicate
+- Insert pages from other PDFs or blank pages, anywhere
+- Extract selected pages into a new document
+- Split into several files (every N pages, or at selected pages)
+- Combine several PDFs into one
+- Reduce file size: re-saves photos at a lower resolution (three levels) and drops unused data; shows the result before you keep it
+- Page changes and annotation changes share one undo history; annotations move with their pages
+
+**Web app (PWA) is done:**
+
+- Installable from Chrome, Edge and Safari ("Install app" button, or Add to Home Screen); runs in its own window
+- Works fully offline once loaded: the app, PDF engine, fonts and character maps are cached
+- Files never leave the device: there is no server, everything runs in the browser
+- In Chrome and Edge, Open and Save work on real files (Save writes back to the same file), dropped files keep that link, Split writes into a chosen folder, and the installed app can be the system's "Open with" choice for PDFs. Other browsers download a copy instead
+- Shows an "Update now" bar when a new version is ready (never reloads over unsaved work)
+- Two-finger pinch zoom on phones and tablets; zooming keeps the spot under your fingers or cursor in place
+
+Limits for now: text boxes and stamps use Helvetica, so characters outside Western European languages appear as "?" in the saved file (the text itself is kept). Encrypted PDFs can be read and annotated but not saved or reorganized. Compression only shrinks JPEG photos (most scans and camera images); other image types are left as they are. Annotations made in other apps are shown but can't be edited yet.
 
 ### Shortcuts
 
@@ -73,6 +92,8 @@ Limits for now: text boxes and stamps use Helvetica, so characters outside Weste
 | Save / Save As | ⌘S / ⌘⇧S | Ctrl+S / Ctrl+Shift+S |
 | Undo / redo | ⌘Z / ⌘⇧Z | Ctrl+Z / Ctrl+Shift+Z |
 | Delete selected annotation | Delete | Delete |
+| Organize pages | ⌘⇧O | Ctrl+Shift+O |
+| Combine files / reduce file size | ⌘⌥C / ⌘⌥R | Ctrl+Alt+C / Ctrl+Alt+R |
 
 With Annotate on, single keys pick a tool: **V** select, **H** highlight, **U** underline, **K** strikethrough, **N** note, **D** draw, **R** rectangle, **O** ellipse, **L** line, **A** arrow, **T** text box, **S** stamp. **Esc** deselects, then returns to Select.
 
@@ -82,11 +103,22 @@ Requires Node 20+ and Rust (for the desktop build).
 
 ```bash
 npm install
-npm run dev          # web UI only, at http://localhost:1420
+npm run dev          # web app in development, at http://localhost:1420 (no offline caching)
+npm run build        # production web app in dist/
+npm run preview      # serve dist/ at http://localhost:4173 to test install and offline
 npm run tauri dev    # desktop app
 npm run tauri build  # installers
 npm run sample       # regenerate public/samples/sample.pdf
 ```
+
+### Hosting the web app
+
+`dist/` is a static site: upload it to any static host with HTTPS (GitHub Pages, Netlify, Vercel, Cloudflare Pages…). Service workers need HTTPS (localhost is exempt). Two settings matter:
+
+- **Sub-path:** if the app lives at e.g. `https://example.com/pdf-studio/`, build with `VITE_BASE=/pdf-studio/ npm run build`.
+- **Single-page app:** unknown paths should serve `index.html` (most hosts do this for SPAs; the service worker also handles it once installed).
+
+The desktop build never registers a service worker; the PWA plugin switches itself off when Tauri builds.
 
 In the web UI during development, `http://localhost:1420/?file=/samples/sample.pdf` opens the sample straight away.
 
@@ -94,8 +126,11 @@ In the web UI during development, `http://localhost:1420/?file=/samples/sample.p
 
 - `src/lib/` — PDF loading (`pdf.ts`), search, desktop/browser bridge (`platform.ts`), view state
 - `src/lib/annotations.ts` — the annotation model (PDF coordinates) and undo history
+- `src/lib/pdfPages.ts` — page operations (reorder, rotate, delete, insert, merge, extract) and compression
 - `src/lib/pdfWrite.ts` — writes annotations into the PDF with pdf-lib, and reads PDF Studio's own back out on open
-- `src/components/` — `Viewer` (scrolling and layout), `PageView` (one page: drawing, text, links, highlights), `AnnotationLayer` (drawing and editing annotations on a page), `AnnotateBar`, `CommentsPanel`, `Sidebar`, `Toolbar`, `SearchBar`
+- `src/components/` — `Viewer` (scrolling and layout), `PageView` (one page: drawing, text, links, highlights), `AnnotationLayer` (drawing and editing annotations on a page), `AnnotateBar`, `CommentsPanel`, `OrganizeView`, `CompressDialog`, `Sidebar`, `Toolbar`, `SearchBar`
+- `src/pwa.ts` — service worker registration, install prompt and update notice (web only)
+- `src/lib/platform.ts` — desktop vs browser: file dialogs, File System Access (save in place), drag and drop, "Open with"
 - `src-tauri/` — the desktop shell: reading and safely writing files, native menu, "Open With" handling
 
 ### How saved annotations stay editable

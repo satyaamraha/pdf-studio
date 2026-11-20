@@ -111,6 +111,51 @@ export function Viewer(props: Props) {
   // Where the reader is, as page + fraction, so zooming keeps the same spot in view.
   const anchor = useRef({ page: initialPage, fraction: 0, centerX: 0.5 });
   const ready = useRef(false);
+  /**
+   * When zooming with the pointer or fingers, the spot under them should stay put.
+   * Stored as page + fraction (vertical) and fraction of content width (horizontal),
+   * plus where on screen it was.
+   */
+  const focus = useRef<{ page: number; fy: number; fx: number; sx: number; sy: number } | null>(null);
+  /** Scale the zoom is heading to while several wheel/pinch steps arrive before a re-render. */
+  const pendingScale = useRef<number | null>(null);
+  const scaleRef = useRef(scale);
+  scaleRef.current = scale;
+
+  const captureFocus = useCallback((clientX: number, clientY: number) => {
+    const el = scrollRef.current;
+    const { tops, dims, contentWidth } = layoutRef.current;
+    if (!el || !tops.length) return;
+    const r = el.getBoundingClientRect();
+    const sx = clientX - r.left;
+    const sy = clientY - r.top;
+    const y = el.scrollTop + sy;
+    const page = pageAt(tops, y);
+    focus.current = {
+      page,
+      fy: (y - tops[page]) / (dims[page].height + GAP),
+      fx: (el.scrollLeft + sx) / contentWidth,
+      sx,
+      sy,
+    };
+  }, []);
+
+  /** Zooms by `factor`, keeping the point at (clientX, clientY) under the pointer. */
+  const zoomAt = useCallback(
+    (factor: number, clientX: number, clientY: number) => {
+      if (!focus.current) captureFocus(clientX, clientY);
+      const base = pendingScale.current ?? scaleRef.current;
+      const next = clampScale(base * factor);
+      if (Math.abs(next - base) < 0.001) {
+        // Already at the zoom limit: nothing will re-layout, so don't keep the focus point.
+        if (pendingScale.current === null) focus.current = null;
+        return;
+      }
+      pendingScale.current = next;
+      cb.current.onZoomBy(next / scaleRef.current);
+    },
+    [captureFocus],
+  );
 
   const update = useCallback(() => {
     const el = scrollRef.current;
@@ -145,9 +190,15 @@ export function Viewer(props: Props) {
     if (!el || !box.width) return;
     const { page, fraction, centerX } = anchor.current;
     const p = Math.min(page, layout.tops.length - 1);
+    pendingScale.current = null;
+    const f = focus.current;
     if (!ready.current) {
       ready.current = true;
       el.scrollTop = p === 0 ? 0 : layout.tops[p] - GAP / 2;
+    } else if (f && f.page < layout.tops.length) {
+      focus.current = null;
+      el.scrollTop = layout.tops[f.page] + f.fy * (layout.dims[f.page].height + GAP) - f.sy;
+      el.scrollLeft = f.fx * layout.contentWidth - f.sx;
     } else {
       el.scrollTop = layout.tops[p] + fraction * (layout.dims[p].height + GAP);
       el.scrollLeft = centerX * el.scrollWidth - el.clientWidth / 2;
@@ -177,7 +228,7 @@ export function Viewer(props: Props) {
     };
   }, [apiRef, doc, scale, rotation, range]);
 
-  // Pinch-to-zoom on trackpads and Ctrl/Cmd + mouse wheel.
+  // Trackpad pinch and Ctrl/Cmd + mouse wheel: zoom towards the pointer.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -185,11 +236,62 @@ export function Viewer(props: Props) {
       if (!e.ctrlKey && !e.metaKey) return;
       e.preventDefault();
       const delta = Math.max(-25, Math.min(25, e.deltaY));
-      cb.current.onZoomBy(Math.exp(-delta * 0.01));
+      zoomAt(Math.exp(-delta * 0.01), e.clientX, e.clientY);
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-  }, []);
+  }, [zoomAt]);
+
+  // Two-finger pinch on touch screens. While pinching, the pages are stretched with a CSS
+  // transform (instant); when the fingers lift, the real zoom is applied and pages redraw sharp.
+  const pagesRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    let start: { dist: number; cx: number; cy: number } | null = null;
+    let ratio = 1;
+    const dist = (t: TouchList) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+    const onStart = (e: TouchEvent) => {
+      if (e.touches.length !== 2) return;
+      const cx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+      const cy = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+      start = { dist: dist(e.touches), cx, cy };
+      ratio = 1;
+      const r = el.getBoundingClientRect();
+      if (pagesRef.current) pagesRef.current.style.transformOrigin = `${el.scrollLeft + cx - r.left}px ${el.scrollTop + cy - r.top}px`;
+    };
+    const onMove = (e: TouchEvent) => {
+      if (!start || e.touches.length !== 2) return;
+      e.preventDefault();
+      const s = scaleRef.current;
+      ratio = clampScale(s * (dist(e.touches) / start.dist)) / s;
+      if (pagesRef.current) pagesRef.current.style.transform = `scale(${ratio})`;
+    };
+    const onEnd = (e: TouchEvent) => {
+      if (!start || e.touches.length >= 2) return;
+      if (pagesRef.current) pagesRef.current.style.transform = '';
+      if (Math.abs(ratio - 1) > 0.02) {
+        focus.current = null;
+        captureFocus(start.cx, start.cy);
+        zoomAt(ratio, start.cx, start.cy);
+      }
+      start = null;
+    };
+    // Safari's own pinch gesture would zoom the whole app instead.
+    const stopGesture = (e: Event) => e.preventDefault();
+    el.addEventListener('touchstart', onStart, { passive: true });
+    el.addEventListener('touchmove', onMove, { passive: false });
+    el.addEventListener('touchend', onEnd);
+    el.addEventListener('touchcancel', onEnd);
+    el.addEventListener('gesturestart', stopGesture);
+    return () => {
+      el.removeEventListener('touchstart', onStart);
+      el.removeEventListener('touchmove', onMove);
+      el.removeEventListener('touchend', onEnd);
+      el.removeEventListener('touchcancel', onEnd);
+      el.removeEventListener('gesturestart', stopGesture);
+    };
+  }, [captureFocus, zoomAt]);
 
   const onScroll = useCallback(() => update(), [update]);
   const onLink = useCallback((l: LinkTarget) => cb.current.onLink(l), []);
@@ -220,7 +322,7 @@ export function Viewer(props: Props) {
 
   return (
     <div ref={scrollRef} className={`viewer${night ? ' night' : ''} tool-${annotUi.tool}`} onScroll={onScroll} tabIndex={0}>
-      <div className="pages" style={{ height: layout.totalHeight, width: layout.contentWidth }}>
+      <div ref={pagesRef} className="pages" style={{ height: layout.totalHeight, width: layout.contentWidth }}>
         {pages}
       </div>
     </div>

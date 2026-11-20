@@ -3,6 +3,7 @@ import { ChevronRight } from 'lucide-react';
 import type { Annotation } from '../lib/annotations';
 import { rotatedSize, type OutlineNode, type PageSize, type PDFDocumentProxy } from '../lib/pdf';
 import { scrollIntoContainer } from '../lib/scroll';
+import { renderThumbnail } from '../lib/thumbnail';
 import { CommentsPanel } from './CommentsPanel';
 
 const THUMB_WIDTH = 132;
@@ -127,32 +128,9 @@ const Thumb = memo(function Thumb({ doc, index, size, rotation, active, root, on
 
   useEffect(() => {
     if (!visible) return;
-    let cancelled = false;
-    let task: { promise: Promise<void>; cancel(): void } | null = null;
-    void (async () => {
-      try {
-        const page = await doc.getPage(index + 1);
-        if (cancelled) return;
-        const totalRotation = (page.rotate + rotation) % 360;
-        const base = page.getViewport({ scale: 1, rotation: totalRotation });
-        const dpr = window.devicePixelRatio || 1;
-        const viewport = page.getViewport({ scale: (THUMB_WIDTH / base.width) * dpr, rotation: totalRotation });
-        const canvas = document.createElement('canvas');
-        canvas.width = Math.floor(viewport.width);
-        canvas.height = Math.floor(viewport.height);
-        const ctx = canvas.getContext('2d', { alpha: false });
-        if (!ctx) return;
-        task = page.render({ canvasContext: ctx, viewport });
-        await task.promise;
-        if (!cancelled) hostRef.current?.replaceChildren(canvas);
-      } catch {
-        /* cancelled or failed: leave the blank placeholder */
-      }
-    })();
-    return () => {
-      cancelled = true;
-      task?.cancel();
-    };
+    const job = renderThumbnail(doc, index, rotation, THUMB_WIDTH);
+    void job.promise.then((canvas) => canvas && hostRef.current?.replaceChildren(canvas));
+    return () => job.cancel();
   }, [visible, doc, index, rotation]);
 
   return (
