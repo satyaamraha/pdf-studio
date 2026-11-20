@@ -106,3 +106,59 @@ export async function onNativeDrop(handler: (state: DragState, paths: string[]) 
     else handler('leave', []);
   });
 }
+
+// ----- saving -----
+
+/** Asks where to save (desktop). Returns null if the user cancels. */
+export async function chooseSavePath(suggested: string): Promise<string | null> {
+  const { save } = await import('@tauri-apps/plugin-dialog');
+  return save({ defaultPath: suggested, filters: [{ name: 'PDF documents', extensions: ['pdf'] }] });
+}
+
+/** Writes bytes to a .pdf path (desktop). Sent as raw binary, not JSON. */
+export async function writePath(path: string, bytes: Uint8Array): Promise<void> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('write_pdf', bytes, { headers: { 'x-path': encodeURIComponent(path) } });
+}
+
+/** Browser fallback: hands the file to the browser's downloads. */
+export function downloadFile(bytes: Uint8Array, name: string): void {
+  const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: 'application/pdf' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+export function basenameOf(path: string): string {
+  return basename(path);
+}
+
+/**
+ * Lets the app stop the window closing (desktop) or warn before leaving (browser).
+ * `shouldBlock` returns true when there is unsaved work; `onBlocked` then asks the user.
+ */
+export async function guardClose(shouldBlock: () => boolean, onBlocked: () => void): Promise<Unlisten> {
+  if (!isTauri) {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (shouldBlock()) e.preventDefault();
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }
+  const { getCurrentWindow } = await import('@tauri-apps/api/window');
+  return getCurrentWindow().onCloseRequested((event) => {
+    if (shouldBlock()) {
+      event.preventDefault();
+      onBlocked();
+    }
+  });
+}
+
+/** Closes the app without asking again. */
+export async function quitApp(): Promise<void> {
+  if (!isTauri) return;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('exit_app');
+}

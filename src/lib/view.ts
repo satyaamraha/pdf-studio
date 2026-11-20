@@ -1,3 +1,4 @@
+import type { AnnotState } from './annotations';
 import type { OutlineNode, PageSize, PDFDocumentProxy } from './pdf';
 
 /** 'page-width' and 'page-fit' follow the window size; a number is a fixed scale (1 = 100%). */
@@ -21,6 +22,11 @@ export interface DocTab {
   sizes: PageSize[];
   outline: OutlineNode[];
   view: DocView;
+  /** The file's bytes without PDF Studio's annotations; saving adds them back. */
+  base: Uint8Array;
+  annots: AnnotState;
+  /** Why the document can't be saved, if it can't (e.g. encrypted). */
+  readOnly: string | null;
 }
 
 export const MIN_SCALE = 0.1;

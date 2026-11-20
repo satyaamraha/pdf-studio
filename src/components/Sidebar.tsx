@@ -1,11 +1,13 @@
 import { memo, useEffect, useRef, useState } from 'react';
 import { ChevronRight } from 'lucide-react';
+import type { Annotation } from '../lib/annotations';
 import { rotatedSize, type OutlineNode, type PageSize, type PDFDocumentProxy } from '../lib/pdf';
 import { scrollIntoContainer } from '../lib/scroll';
+import { CommentsPanel } from './CommentsPanel';
 
 const THUMB_WIDTH = 132;
 
-export type SidebarPanel = 'thumbs' | 'outline';
+export type SidebarPanel = 'thumbs' | 'outline' | 'comments';
 
 interface Props {
   doc: PDFDocumentProxy;
@@ -14,9 +16,16 @@ interface Props {
   outline: OutlineNode[];
   page: number;
   panel: SidebarPanel;
+  annotations: Annotation[];
+  selectedId: string | null;
+  author: string;
+  onAuthor: (name: string) => void;
   onPanelChange: (panel: SidebarPanel) => void;
   onGoToPage: (index: number) => void;
   onOutline: (node: OutlineNode) => void;
+  onFocusAnnotation: (a: Annotation) => void;
+  onComment: (a: Annotation, final: boolean) => void;
+  onDeleteAnnotation: (id: string) => void;
 }
 
 export function Sidebar(props: Props) {
@@ -30,9 +39,22 @@ export function Sidebar(props: Props) {
         <button role="tab" aria-selected={panel === 'outline'} onClick={() => onPanelChange('outline')}>
           Outline
         </button>
+        <button role="tab" aria-selected={panel === 'comments'} onClick={() => onPanelChange('comments')}>
+          Notes{props.annotations.length ? ` ${props.annotations.length}` : ''}
+        </button>
       </div>
       {panel === 'thumbs' ? (
         <Thumbnails {...props} />
+      ) : panel === 'comments' ? (
+        <CommentsPanel
+          items={props.annotations}
+          selectedId={props.selectedId}
+          author={props.author}
+          onAuthor={props.onAuthor}
+          onFocus={props.onFocusAnnotation}
+          onComment={props.onComment}
+          onDelete={props.onDeleteAnnotation}
+        />
       ) : outline.length ? (
         <div className="outline">
           <OutlineTree nodes={outline} depth={0} onSelect={props.onOutline} />

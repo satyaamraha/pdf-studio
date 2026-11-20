@@ -1,8 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { CSS_UNITS, rotatedSize, type PageSize, type PDFDocumentProxy } from '../lib/pdf';
 import type { SearchHit } from '../lib/search';
+import type { Annotation } from '../lib/annotations';
+import { pageMatrix } from '../lib/geometry';
 import { clampScale, type LinkTarget, type Zoom } from '../lib/view';
+import type { AnnotUi } from './AnnotationLayer';
 import { PageView } from './PageView';
+
+const NO_ANNOTS: Annotation[] = [];
 
 const GAP = 14; // space between pages
 const PAD_Y = 18; // space above the first and below the last page
@@ -25,6 +30,8 @@ interface Props {
   hitsByPage: Map<number, SearchHit[]>;
   activeHit: number;
   apiRef: RefObject<ViewerApi | null>;
+  annotsByPage: Map<number, Annotation[]>;
+  annotUi: AnnotUi;
   onPageChange: (page: number) => void;
   onScaleChange: (scale: number) => void;
   onZoomBy: (factor: number) => void;
@@ -44,7 +51,7 @@ function pageAt(tops: number[], y: number): number {
 }
 
 export function Viewer(props: Props) {
-  const { doc, sizes, zoom, rotation, initialPage, night, hitsByPage, activeHit, apiRef } = props;
+  const { doc, sizes, zoom, rotation, initialPage, night, hitsByPage, activeHit, apiRef, annotsByPage, annotUi } = props;
   const scrollRef = useRef<HTMLDivElement>(null);
   const [box, setBox] = useState({ width: 0, height: 0 });
 
@@ -91,6 +98,12 @@ export function Viewer(props: Props) {
     const contentWidth = Math.max(box.width, maxWidth + PAD_X * 2);
     return { tops, dims, totalHeight: y - GAP + PAD_Y, contentWidth };
   }, [sizes, rotation, scale, box.width]);
+
+  // PDF space -> on-screen pixels, per page, for annotations.
+  const matrices = useMemo(
+    () => sizes.map((s) => pageMatrix(s.view, (s.rotate + rotation) % 360, scale * CSS_UNITS)),
+    [sizes, rotation, scale],
+  );
 
   const layoutRef = useRef(layout);
   const [range, setRange] = useState<[number, number]>([0, 0]);
@@ -198,12 +211,15 @@ export function Viewer(props: Props) {
         hits={hitsByPage.get(i)}
         activeHit={hitsByPage.has(i) ? activeHit : -1}
         onLink={onLink}
+        matrix={matrices[i]}
+        annots={annotsByPage.get(i) ?? NO_ANNOTS}
+        ui={annotUi}
       />,
     );
   }
 
   return (
-    <div ref={scrollRef} className={`viewer${night ? ' night' : ''}`} onScroll={onScroll} tabIndex={0}>
+    <div ref={scrollRef} className={`viewer${night ? ' night' : ''} tool-${annotUi.tool}`} onScroll={onScroll} tabIndex={0}>
       <div className="pages" style={{ height: layout.totalHeight, width: layout.contentWidth }}>
         {pages}
       </div>

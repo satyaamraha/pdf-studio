@@ -51,6 +51,10 @@ export async function loadPdf(
 export interface PageSize {
   width: number;
   height: number;
+  /** Visible page box in PDF user space [x0, y0, x1, y1]. */
+  view: number[];
+  /** The page's own rotation (/Rotate), in degrees. */
+  rotate: number;
 }
 
 export async function getPageSizes(doc: PDFDocumentProxy): Promise<PageSize[]> {
@@ -59,11 +63,11 @@ export async function getPageSizes(doc: PDFDocumentProxy): Promise<PageSize[]> {
   );
   return pages.map((page) => {
     const { width, height } = page.getViewport({ scale: 1 });
-    return { width, height };
+    return { width, height, view: page.view, rotate: page.rotate };
   });
 }
 
-export function rotatedSize(size: PageSize, rotation: number): PageSize {
+export function rotatedSize(size: { width: number; height: number }, rotation: number): { width: number; height: number } {
   return rotation % 180 === 0 ? size : { width: size.height, height: size.width };
 }
 

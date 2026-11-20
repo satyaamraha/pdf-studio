@@ -44,6 +44,19 @@ An open-source, cross-platform PDF reader and editor: view, annotate, organize, 
 - Password-protected PDFs
 - Light, dark and system theme, plus night reading (dark pages)
 
+**Stage 2 (annotate) is done:**
+
+- Highlight, underline and strikethrough by selecting text
+- Sticky notes, freehand drawing, rectangles, ellipses, lines, arrows, text boxes and stamps (Approved, Draft, Confidential…)
+- Select, move, resize and delete; change colour, line width and font size
+- Comments on any annotation, with a Notes panel listing them all
+- Undo and redo
+- Save and Save As. Annotations are written as standard PDF annotations, so other readers (Preview, Acrobat, Chrome…) show them
+- Annotations made here stay editable when the file is reopened in PDF Studio
+- Warns before closing a tab or quitting with unsaved changes
+
+Limits for now: text boxes and stamps use Helvetica, so characters outside Western European languages appear as "?" in the saved file (the text itself is kept). Encrypted PDFs can be read and annotated but not saved. Annotations made in other apps are shown but can't be edited yet.
+
 ### Shortcuts
 
 | Action | macOS | Windows / Linux |
@@ -57,6 +70,11 @@ An open-source, cross-platform PDF reader and editor: view, annotate, organize, 
 | Previous / next page | ← / → | ← / → |
 | First / last page | Home / End | Home / End |
 | Next / previous tab | Ctrl+Tab / Ctrl+Shift+Tab | Ctrl+Tab / Ctrl+Shift+Tab |
+| Save / Save As | ⌘S / ⌘⇧S | Ctrl+S / Ctrl+Shift+S |
+| Undo / redo | ⌘Z / ⌘⇧Z | Ctrl+Z / Ctrl+Shift+Z |
+| Delete selected annotation | Delete | Delete |
+
+With Annotate on, single keys pick a tool: **V** select, **H** highlight, **U** underline, **K** strikethrough, **N** note, **D** draw, **R** rectangle, **O** ellipse, **L** line, **A** arrow, **T** text box, **S** stamp. **Esc** deselects, then returns to Select.
 
 ## Development
 
@@ -75,5 +93,11 @@ In the web UI during development, `http://localhost:1420/?file=/samples/sample.p
 ### Project layout
 
 - `src/lib/` — PDF loading (`pdf.ts`), search, desktop/browser bridge (`platform.ts`), view state
-- `src/components/` — `Viewer` (scrolling and layout), `PageView` (one page: drawing, text, links, highlights), `Sidebar`, `Toolbar`, `SearchBar`
-- `src-tauri/` — the desktop shell: file reading, native menu, "Open With" handling
+- `src/lib/annotations.ts` — the annotation model (PDF coordinates) and undo history
+- `src/lib/pdfWrite.ts` — writes annotations into the PDF with pdf-lib, and reads PDF Studio's own back out on open
+- `src/components/` — `Viewer` (scrolling and layout), `PageView` (one page: drawing, text, links, highlights), `AnnotationLayer` (drawing and editing annotations on a page), `AnnotateBar`, `CommentsPanel`, `Sidebar`, `Toolbar`, `SearchBar`
+- `src-tauri/` — the desktop shell: reading and safely writing files, native menu, "Open With" handling
+
+### How saved annotations stay editable
+
+Each annotation PDF Studio writes is a normal PDF annotation with its own appearance, plus a private `/PDFStudio` entry holding the original data as JSON. On open, those annotations are taken out of the file and turned back into editable objects; saving writes them in again. Other apps ignore the private entry.

@@ -1,27 +1,79 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { FileText, FolderOpen, Plus, X } from 'lucide-react';
-import { DocumentView } from './components/DocumentView';
+import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog';
+import { DocumentView, type Styles } from './components/DocumentView';
 import { PasswordDialog, type PasswordRequest } from './components/PasswordDialog';
 import type { SidebarPanel } from './components/Sidebar';
+import { initialAnnotState, isDirty, redo, undo, type AnnotState } from './lib/annotations';
 import { getOutline, getPageSizes, loadPdf } from './lib/pdf';
+import { buildPdf, extractStudioAnnotations, isEncrypted } from './lib/pdfWrite';
 import {
+  basenameOf,
+  chooseSavePath,
+  downloadFile,
   fileToOpened,
+  guardClose,
   isPdfName,
   isTauri,
   onMenuCommand,
   onNativeDrop,
   onOsOpenFiles,
   pickPdfFiles,
+  quitApp,
   readPath,
   setWindowTitle,
+  writePath,
   type OpenedFile,
 } from './lib/platform';
 import { applyTheme, loadTheme, nextTheme, type ThemePref } from './lib/theme';
 import { stepZoom, type DocTab, type DocView } from './lib/view';
 
 let nextId = 1;
-let devFileLoaded = false;
 const mod = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl+';
+
+const DEFAULT_STYLES: Styles = {
+  kinds: {
+    highlight: { color: '#ffd400', opacity: 0.5, width: 2 },
+    underline: { color: '#51cf66', opacity: 1, width: 2 },
+    strike: { color: '#ff6b6b', opacity: 1, width: 2 },
+    note: { color: '#ffd400', opacity: 1, width: 1 },
+    ink: { color: '#ff6b6b', opacity: 1, width: 2 },
+    rect: { color: '#ff6b6b', opacity: 1, width: 2 },
+    ellipse: { color: '#ff6b6b', opacity: 1, width: 2 },
+    line: { color: '#ff6b6b', opacity: 1, width: 2 },
+    arrow: { color: '#ff6b6b', opacity: 1, width: 2 },
+    text: { color: '#212529', opacity: 1, width: 1 },
+    stamp: { color: '#ff6b6b', opacity: 1, width: 2 },
+  },
+  fontSize: 14,
+  stamp: 'APPROVED',
+};
+
+function loadPref<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(`pdf-studio:${key}`);
+    if (raw) return { ...fallback, ...JSON.parse(raw) } as T;
+  } catch {
+    /* storage unavailable or corrupt */
+  }
+  return fallback;
+}
+
+function savePref(key: string, value: unknown): void {
+  try {
+    localStorage.setItem(`pdf-studio:${key}`, JSON.stringify(value));
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+function isTyping(el: Element | null): boolean {
+  return !!el && ((el as HTMLElement).isContentEditable || ['INPUT', 'TEXTAREA'].includes(el.tagName));
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
 export default function App() {
   const [tabs, setTabs] = useState<DocTab[]>([]);
@@ -35,6 +87,16 @@ export default function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [loading, setLoading] = useState(0);
   const [dragging, setDragging] = useState(false);
+  const [annotateOpen, setAnnotateOpen] = useState(false);
+  const [styles, setStyles] = useState<Styles>(() => {
+    const saved = loadPref<Styles>('styles', DEFAULT_STYLES);
+    return { ...saved, kinds: { ...DEFAULT_STYLES.kinds, ...saved.kinds } };
+  });
+  const [author, setAuthor] = useState<string>(() => loadPref<{ name: string }>('author', { name: '' }).name);
+  const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
+
+  useEffect(() => savePref('styles', styles), [styles]);
+  useEffect(() => savePref('author', { name: author }), [author]);
 
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
@@ -60,8 +122,20 @@ export default function App() {
       }
       setLoading((n) => n + 1);
       try {
+        // PDF Studio's own annotations come out of the file so they stay editable.
+        const encrypted = isEncrypted(file.data);
+        let base = file.data;
+        let items: AnnotState['items'] = [];
+        if (!encrypted) {
+          try {
+            ({ base, items } = await extractStudioAnnotations(file.data));
+          } catch {
+            /* unreadable by pdf-lib: show the file as it is */
+          }
+        }
+        // PDF.js takes ownership of the bytes it is given, so give it a copy.
         const doc = await loadPdf(
-          file.data,
+          base.slice(),
           (reason) => new Promise((resolve) => setPassword({ fileName: file.name, reason, resolve })),
         );
         if (!doc) continue;
@@ -75,12 +149,14 @@ export default function App() {
           sizes,
           outline,
           view: { zoom: 'page-width', scale: 1, rotation: 0, page: 0 },
+          base,
+          annots: initialAnnotState(items),
+          readOnly: encrypted ? 'Encrypted PDFs can be read but not saved yet.' : null,
         };
         setTabs((ts) => [...ts, tab]);
         setActiveId(tab.id);
       } catch (err) {
-        const reason = err instanceof Error ? err.message : String(err);
-        setToast(`Couldn't open “${file.name}”. ${reason}`);
+        setToast(`Couldn't open “${file.name}”. ${errorText(err)}`);
       } finally {
         setLoading((n) => n - 1);
       }
@@ -120,6 +196,92 @@ export default function App() {
     setActiveId((current) => (current === id ? (rest[Math.min(i, rest.length - 1)]?.id ?? null) : current));
   }, []);
 
+  const updateAnnots = useCallback((id: string, update: (s: AnnotState) => AnnotState) => {
+    setTabs((ts) => {
+      let changed = false;
+      const next = ts.map((t) => {
+        if (t.id !== id) return t;
+        const annots = update(t.annots);
+        if (annots === t.annots) return t;
+        changed = true;
+        return { ...t, annots };
+      });
+      return changed ? next : ts;
+    });
+  }, []);
+
+  // ----- saving -----
+  const saveTab = useCallback(async (id: string, saveAs = false): Promise<boolean> => {
+    const tab = tabsRef.current.find((t) => t.id === id);
+    if (!tab) return false;
+    if (tab.readOnly) {
+      setToast(tab.readOnly);
+      return false;
+    }
+    const items = tab.annots.items;
+    try {
+      let path = tab.path;
+      let name = tab.name;
+      if (isTauri && (saveAs || !path)) {
+        const chosen = await chooseSavePath(path ?? name);
+        if (!chosen) return false;
+        path = isPdfName(chosen) ? chosen : `${chosen}.pdf`;
+        name = basenameOf(path);
+      }
+      setLoading((n) => n + 1);
+      try {
+        const bytes = await buildPdf(tab.base, items);
+        if (isTauri && path) await writePath(path, bytes);
+        else downloadFile(bytes, name);
+      } finally {
+        setLoading((n) => n - 1);
+      }
+      setTabs((ts) => ts.map((t) => (t.id === id ? { ...t, path, name, annots: { ...t.annots, saved: items } } : t)));
+      setToast(`Saved “${name}”.`);
+      return true;
+    } catch (err) {
+      setToast(`Couldn't save “${tab.name}”. ${errorText(err)}`);
+      return false;
+    }
+  }, []);
+
+  const requestCloseTab = useCallback(
+    (id: string) => {
+      const tab = tabsRef.current.find((t) => t.id === id);
+      if (!tab) return;
+      if (!isDirty(tab.annots)) return closeTab(id);
+      setActiveId(id);
+      setConfirm({
+        title: `Save changes to “${tab.name}”?`,
+        message: "Your annotations will be lost if you don't save them.",
+        actions: [
+          { label: "Don't Save", kind: 'danger', run: () => closeTab(id) },
+          { label: 'Cancel' },
+          { label: 'Save', kind: 'primary', run: () => void saveTab(id).then((ok) => ok && closeTab(id)) },
+        ],
+      });
+    },
+    [closeTab, saveTab],
+  );
+
+  const dirtyTabs = () => tabsRef.current.filter((t) => isDirty(t.annots));
+  const confirmQuit = useCallback(() => {
+    const dirty = tabsRef.current.filter((t) => isDirty(t.annots));
+    setConfirm({
+      title: dirty.length === 1 ? `“${dirty[0].name}” has unsaved changes` : `${dirty.length} documents have unsaved changes`,
+      message: 'If you quit now, your unsaved annotations will be lost.',
+      actions: [
+        { label: 'Quit Anyway', kind: 'danger', run: () => void quitApp() },
+        { label: 'Cancel', kind: 'primary' },
+      ],
+    });
+  }, []);
+
+  useEffect(() => {
+    const p = guardClose(() => tabsRef.current.some((t) => isDirty(t.annots)), confirmQuit);
+    return () => void p.then((f) => f());
+  }, [confirmQuit]);
+
   const updateView = useCallback((id: string, patch: Partial<DocView>) => {
     setTabs((ts) => {
       let changed = false;
@@ -142,7 +304,18 @@ export default function App() {
       case 'open':
         return void pickAndOpen();
       case 'close_tab':
-        return activeId && closeTab(activeId);
+        return activeId && requestCloseTab(activeId);
+      case 'save':
+        return tab && void saveTab(tab.id);
+      case 'save_as':
+        return tab && void saveTab(tab.id, true);
+      case 'undo':
+      case 'redo':
+        // In a text field the menu item edits the text, as usual.
+        if (isTyping(document.activeElement)) return void document.execCommand(cmd);
+        return tab && updateAnnots(tab.id, cmd === 'undo' ? undo : redo);
+      case 'quit':
+        return dirtyTabs().length ? confirmQuit() : void quitApp();
       case 'find':
         return tab && setFindNonce((n) => n + 1);
       case 'zoom_in':
@@ -185,6 +358,11 @@ export default function App() {
       // On desktop the native menu owns these shortcuts.
       if (isTauri) return;
       const map: Record<string, string> = {
+        s: 'save',
+        'shift+s': 'save_as',
+        z: 'undo',
+        'shift+z': 'redo',
+        y: 'redo',
         o: 'open',
         w: 'close_tab',
         f: 'find',
@@ -196,8 +374,10 @@ export default function App() {
         '2': 'fit_page',
         r: 'rotate',
       };
-      const cmd = map[e.key.toLowerCase()];
-      if (!cmd || e.shiftKey) return;
+      const cmd = map[(e.shiftKey ? 'shift+' : '') + e.key.toLowerCase()];
+      if (!cmd) return;
+      // Let text fields handle their own undo.
+      if ((cmd === 'undo' || cmd === 'redo') && isTyping(document.activeElement)) return;
       e.preventDefault();
       commandRef.current(cmd);
     };
@@ -249,10 +429,12 @@ export default function App() {
 
   // Development helper: open a PDF from the dev server with ?file=/samples/sample.pdf
   useEffect(() => {
-    if (!import.meta.env.DEV || devFileLoaded) return;
+    // Kept on window so hot reloads during development don't open the file again.
+    const flags = window as { __pdfStudioDevFile?: boolean };
+    if (!import.meta.env.DEV || flags.__pdfStudioDevFile) return;
     const file = new URLSearchParams(location.search).get('file');
     if (!file || !file.startsWith('/')) return;
-    devFileLoaded = true;
+    flags.__pdfStudioDevFile = true;
     void fetch(file)
       .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(r.statusText))))
       .then((buf) => openFiles([{ name: file.split('/').pop() || 'document.pdf', data: new Uint8Array(buf) }]))
@@ -269,20 +451,21 @@ export default function App() {
             aria-selected={t.id === activeId}
             className={`tab${t.id === activeId ? ' active' : ''}`}
             onClick={() => setActiveId(t.id)}
-            onAuxClick={(e) => e.button === 1 && closeTab(t.id)}
+            onAuxClick={(e) => e.button === 1 && requestCloseTab(t.id)}
             title={t.path ?? t.name}
           >
             <FileText size={14} className="tab-icon" />
             <span className="tab-name">{t.name}</span>
             <button
-              className="tab-close"
-              aria-label={`Close ${t.name}`}
+              className={`tab-close${isDirty(t.annots) ? ' dirty' : ''}`}
+              aria-label={`Close ${t.name}${isDirty(t.annots) ? ' (unsaved changes)' : ''}`}
               onClick={(e) => {
                 e.stopPropagation();
-                closeTab(t.id);
+                requestCloseTab(t.id);
               }}
             >
-              <X size={13} />
+              <X size={13} className="tab-x" />
+              <span className="tab-dirty" />
             </button>
           </div>
         ))}
@@ -302,7 +485,16 @@ export default function App() {
           night={night}
           theme={theme}
           findNonce={findNonce}
+          annotateOpen={annotateOpen}
+          styles={styles}
+          author={author}
+          dirty={isDirty(active.annots)}
           onView={(patch) => updateView(active.id, patch)}
+          onAnnots={(update) => updateAnnots(active.id, update)}
+          onStyles={setStyles}
+          onAuthor={setAuthor}
+          onSave={() => void saveTab(active.id)}
+          onToggleAnnotate={() => setAnnotateOpen((v) => !v)}
           onToggleSidebar={() => setSidebarOpen((v) => !v)}
           onSidebarPanel={setSidebarPanel}
           onToggleNight={() => setNight((v) => !v)}
@@ -341,6 +533,8 @@ export default function App() {
           }}
         />
       )}
+
+      {confirm && <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />}
 
       {toast && (
         <div className="toast" role="alert" onClick={() => setToast(null)}>

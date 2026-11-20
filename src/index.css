@@ -82,7 +82,8 @@ body {
 }
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
   color: inherit;
 }
@@ -689,8 +690,7 @@ button.primary:disabled {
   padding: 16px;
 }
 .modal {
-  width: 360px;
-  max-width: 100%;
+  width: min(360px, 100%);
   padding: 22px;
   border-radius: 14px;
   background: var(--surface);
@@ -766,4 +766,393 @@ button.primary:disabled {
   .searchbar input {
     width: 140px;
   }
+}
+
+/* ---------- Annotate bar ---------- */
+.icon-btn.wide {
+  display: inline-flex;
+  gap: 6px;
+  width: auto;
+  padding: 0 10px;
+}
+.icon-btn.dirty {
+  position: relative;
+}
+.icon-btn.dirty::after {
+  content: '';
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--chrome);
+}
+.annotatebar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 42px;
+  padding: 0 10px;
+  background: var(--chrome);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.annotatebar .spacer {
+  flex: 1;
+}
+.tool-group {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding-right: 8px;
+  border-right: 1px solid var(--border);
+}
+.swatches {
+  display: flex;
+  gap: 5px;
+  padding: 0 4px;
+}
+.swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid var(--chrome);
+  box-shadow: 0 0 0 1px var(--border-strong);
+  padding: 0;
+  flex-shrink: 0;
+}
+.swatch.on {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.bar-select {
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+.bar-note {
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* ---------- Annotation layer ---------- */
+.annot-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+.annot-layer.mode-draw {
+  pointer-events: auto;
+  cursor: crosshair;
+  touch-action: none;
+}
+.annot-layer[data-tool='text'] {
+  cursor: text;
+}
+.annot-layer[data-tool='note'],
+.annot-layer[data-tool='stamp'] {
+  cursor: copy;
+}
+.annot-svg {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+}
+.annot-layer.mode-select .annot-hit,
+.annot-layer.mode-select .annot-hit * {
+  pointer-events: visiblePainted;
+  cursor: move;
+}
+.annot-frame {
+  position: absolute;
+  border: 1.5px solid var(--accent);
+  border-radius: 3px;
+  pointer-events: auto;
+  cursor: move;
+  touch-action: none;
+}
+.annot-frame.thin {
+  border-style: dashed;
+  border-width: 1px;
+}
+.annot-handle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #fff;
+  border: 1.5px solid var(--accent);
+  pointer-events: auto;
+  touch-action: none;
+  z-index: 1;
+}
+.h-nw,
+.h-se {
+  cursor: nwse-resize;
+}
+.h-ne,
+.h-sw {
+  cursor: nesw-resize;
+}
+.h-from,
+.h-to {
+  cursor: grab;
+}
+.annot-textarea {
+  position: absolute;
+  margin: 0;
+  border: 1.5px dashed var(--accent);
+  border-radius: 2px;
+  background: rgb(255 255 255 / 0.85);
+  font-family: Helvetica, Arial, sans-serif;
+  resize: none;
+  outline: none;
+  overflow: hidden;
+  pointer-events: auto;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.comment-pop {
+  position: absolute;
+  z-index: 5;
+  width: 240px;
+  padding: 8px;
+  border-radius: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-pop);
+  pointer-events: auto;
+  cursor: default;
+}
+.comment-pop textarea {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: var(--chrome);
+  resize: vertical;
+  outline: none;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.comment-pop textarea:focus {
+  border-color: var(--accent);
+}
+.comment-pop-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+.comment-pop-actions .comment-author {
+  margin-right: auto;
+}
+button.primary.small {
+  height: 26px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+/* Links only respond to the Select tool. */
+.viewer:not(.tool-select) .link-layer {
+  display: none;
+}
+.viewer.tool-highlight .textLayer ::selection {
+  background: rgb(255 212 0 / 0.45);
+}
+
+/* ---------- Comments panel ---------- */
+.comments {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.author-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 10px 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.author-field input {
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  font-size: 12px;
+  color: var(--text);
+  user-select: text;
+}
+.comment-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 8px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.comment-card {
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+.comment-card.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.comment-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.comment-head .dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.comment-kind {
+  font-weight: 600;
+  font-size: 12px;
+}
+.comment-meta {
+  flex: 1;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.comment-head .icon-btn {
+  width: 22px;
+  height: 22px;
+  opacity: 0;
+}
+.comment-card:hover .icon-btn,
+.comment-card.selected .icon-btn {
+  opacity: 1;
+}
+.comment-quote {
+  margin: 6px 0 0;
+  padding-left: 8px;
+  border-left: 2px solid var(--border-strong);
+  color: var(--text-muted);
+  font-size: 12px;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.comment-text {
+  margin: 6px 0 0;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.comment-input {
+  width: 100%;
+  margin-top: 6px;
+  padding: 5px 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--chrome);
+  font-size: 12px;
+  resize: vertical;
+  outline: none;
+  user-select: text;
+}
+.comment-input:focus {
+  border-color: var(--accent);
+}
+.comment-author {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* ---------- Misc ---------- */
+/* Unsaved tabs show a dot where the close button is; hovering turns it back into ×. */
+.tab-dirty {
+  display: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.tab-close.dirty {
+  opacity: 1;
+}
+.tab-close.dirty .tab-dirty {
+  display: block;
+}
+.tab-close.dirty .tab-x {
+  display: none;
+}
+.tab-close.dirty:hover .tab-dirty {
+  display: none;
+}
+.tab-close.dirty:hover .tab-x {
+  display: block;
+}
+.modal-icon.warn {
+  background: rgb(240 140 0 / 0.14);
+  color: #e8890c;
+}
+.modal-actions button.danger {
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--danger);
+  margin-right: auto;
+}
+.segmented button {
+  font-size: 12px;
+}
+
+/* Narrow windows: keep every toolbar button reachable. */
+.toolbar {
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.toolbar > * {
+  flex-shrink: 0;
+}
+@media (max-width: 900px) {
+  .icon-btn.wide {
+    width: 30px;
+    padding: 0;
+  }
+  .icon-btn.wide span {
+    display: none;
+  }
+  .toolbar .group {
+    padding: 0 3px;
+  }
+  .zoom-select {
+    min-width: 0;
+    width: 92px;
+  }
+  .page-count {
+    display: none;
+  }
+}
+.modal {
+  min-width: 0;
+}
+.modal-actions {
+  flex-wrap: wrap;
 }

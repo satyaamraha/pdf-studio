@@ -5,6 +5,8 @@ import {
   Minus,
   Moon,
   PanelLeft,
+  PenLine,
+  Save,
   Plus,
   RotateCw,
   Search,
@@ -22,6 +24,8 @@ interface Props {
   scale: number;
   sidebarOpen: boolean;
   searchOpen: boolean;
+  annotateOpen: boolean;
+  dirty: boolean;
   night: boolean;
   theme: ThemePref;
   onToggleSidebar: () => void;
@@ -30,6 +34,8 @@ interface Props {
   onZoomStep: (direction: 1 | -1) => void;
   onRotate: () => void;
   onToggleSearch: () => void;
+  onToggleAnnotate: () => void;
+  onSave: () => void;
   onToggleNight: () => void;
   onCycleTheme: () => void;
 }
@@ -124,7 +130,24 @@ export function Toolbar(p: Props) {
         <RotateCw size={18} />
       </button>
 
+      <button
+        className={`icon-btn wide${p.annotateOpen ? ' on' : ''}`}
+        onClick={p.onToggleAnnotate}
+        title="Annotate"
+        aria-pressed={p.annotateOpen}
+      >
+        <PenLine size={17} /> <span>Annotate</span>
+      </button>
+
       <div className="spacer" />
+
+      <button
+        className={`icon-btn${p.dirty ? ' dirty' : ''}`}
+        onClick={p.onSave}
+        title={`Save (${mod}S)${p.dirty ? ' — unsaved changes' : ''}`}
+      >
+        <Save size={18} />
+      </button>
 
       <button
         className={`icon-btn${p.searchOpen ? ' on' : ''}`}

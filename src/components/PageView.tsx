@@ -2,7 +2,10 @@ import { memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties 
 import { CSS_UNITS, getText, pdfjs, type PDFDocumentProxy } from '../lib/pdf';
 import { scrollIntoContainer } from '../lib/scroll';
 import type { SearchHit } from '../lib/search';
+import type { Annotation } from '../lib/annotations';
+import type { Matrix } from '../lib/geometry';
 import type { LinkTarget } from '../lib/view';
+import { AnnotationLayer, type AnnotUi } from './AnnotationLayer';
 
 /** Positions are percentages of the page box so they survive zoom without recomputing. */
 interface Box {
@@ -31,9 +34,12 @@ interface Props {
   hits: SearchHit[] | undefined;
   activeHit: number;
   onLink: (link: LinkTarget) => void;
+  matrix: Matrix;
+  annots: Annotation[];
+  ui: AnnotUi;
 }
 
-function PageViewImpl({ doc, index, top, left, width, height, scale, rotation, hits, activeHit, onLink }: Props) {
+function PageViewImpl({ doc, index, top, left, width, height, scale, rotation, hits, activeHit, onLink, matrix, annots, ui }: Props) {
   const pageRef = useRef<HTMLDivElement>(null);
   const canvasHostRef = useRef<HTMLDivElement>(null);
   const textRef = useRef<HTMLDivElement>(null);
@@ -186,6 +192,7 @@ function PageViewImpl({ doc, index, top, left, width, height, scale, rotation, h
         ))}
       </div>
       <div ref={textRef} className="textLayer" />
+      <AnnotationLayer page={index} items={annots} matrix={matrix} {...ui} />
       <div className="link-layer">
         {links.map((l, i) => (
           <a

@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
@@ -26,6 +26,54 @@ fn read_pdf(path: String) -> Result<tauri::ipc::Response, String> {
   std::fs::read(path)
     .map(tauri::ipc::Response::new)
     .map_err(|e| e.to_string())
+}
+
+fn percent_decode(s: &str) -> Result<String, String> {
+  let bytes = s.as_bytes();
+  let mut out = Vec::with_capacity(bytes.len());
+  let mut i = 0;
+  while i < bytes.len() {
+    if bytes[i] == b'%' && i + 2 < bytes.len() {
+      let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).map_err(|e| e.to_string())?;
+      out.push(u8::from_str_radix(hex, 16).map_err(|e| e.to_string())?);
+      i += 3;
+    } else {
+      out.push(bytes[i]);
+      i += 1;
+    }
+  }
+  String::from_utf8(out).map_err(|e| e.to_string())
+}
+
+/// Writes a PDF to disk. The bytes arrive as the raw request body and the path as a
+/// percent-encoded `x-path` header. Writes to a temporary file first, then renames it
+/// over the target, so a failed save never leaves a half-written PDF.
+#[tauri::command]
+fn write_pdf(request: tauri::ipc::Request) -> Result<(), String> {
+  let tauri::ipc::InvokeBody::Raw(data) = request.body() else {
+    return Err("Expected the file contents as raw bytes.".into());
+  };
+  let header = request
+    .headers()
+    .get("x-path")
+    .and_then(|v| v.to_str().ok())
+    .ok_or("Missing destination path.")?;
+  let path = PathBuf::from(percent_decode(header)?);
+  if !is_pdf(&path) {
+    return Err("Only .pdf files can be saved.".into());
+  }
+  let file_name = path.file_name().ok_or("Invalid file name.")?.to_string_lossy();
+  let tmp = path.with_file_name(format!(".{file_name}.pdfstudio-tmp"));
+  std::fs::write(&tmp, data).map_err(|e| e.to_string())?;
+  std::fs::rename(&tmp, &path).map_err(|e| {
+    let _ = std::fs::remove_file(&tmp);
+    e.to_string()
+  })
+}
+
+#[tauri::command]
+fn exit_app<R: Runtime>(app: AppHandle<R>) {
+  app.exit(0);
 }
 
 /// Returns and clears the list of files waiting to be opened.
@@ -56,6 +104,9 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     &[
       &item("open", "Open…", "CmdOrCtrl+O")?,
       &PredefinedMenuItem::separator(app)?,
+      &item("save", "Save", "CmdOrCtrl+S")?,
+      &item("save_as", "Save As…", "CmdOrCtrl+Shift+S")?,
+      &PredefinedMenuItem::separator(app)?,
       &item("close_tab", "Close Tab", "CmdOrCtrl+W")?,
     ],
   )?;
@@ -66,6 +117,9 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     true,
     &[
       &item("open", "Open…", "CmdOrCtrl+O")?,
+      &PredefinedMenuItem::separator(app)?,
+      &item("save", "Save", "CmdOrCtrl+S")?,
+      &item("save_as", "Save As…", "CmdOrCtrl+Shift+S")?,
       &PredefinedMenuItem::separator(app)?,
       &item("close_tab", "Close Tab", "CmdOrCtrl+W")?,
       &PredefinedMenuItem::separator(app)?,
@@ -78,8 +132,9 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     "Edit",
     true,
     &[
-      &PredefinedMenuItem::undo(app, None)?,
-      &PredefinedMenuItem::redo(app, None)?,
+      // Custom so they undo annotation changes; text fields are handled in the UI.
+      &item("undo", "Undo", "CmdOrCtrl+Z")?,
+      &item("redo", "Redo", "CmdOrCtrl+Shift+Z")?,
       &PredefinedMenuItem::separator(app)?,
       &PredefinedMenuItem::cut(app, None)?,
       &PredefinedMenuItem::copy(app, None)?,
@@ -122,7 +177,8 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         &PredefinedMenuItem::hide_others(app, None)?,
         &PredefinedMenuItem::show_all(app, None)?,
         &PredefinedMenuItem::separator(app)?,
-        &PredefinedMenuItem::quit(app, None)?,
+        // Custom so the UI can warn about unsaved changes first.
+        &item("quit", "Quit PDF Studio", "CmdOrCtrl+Q")?,
       ],
     )?;
     let window = Submenu::with_items(
@@ -155,13 +211,10 @@ pub fn run() {
     .plugin(tauri_plugin_opener::init())
     .manage(PendingFiles(Mutex::new(arg_files)))
     .menu(build_menu)
-    .on_menu_event(|app, event| match event.id().as_ref() {
-      "quit" => app.exit(0),
-      id => {
-        let _ = app.emit("menu", id.to_string());
-      }
+    .on_menu_event(|app, event| {
+      let _ = app.emit("menu", event.id().as_ref().to_string());
     })
-    .invoke_handler(tauri::generate_handler![read_pdf, take_pending_files])
+    .invoke_handler(tauri::generate_handler![read_pdf, write_pdf, take_pending_files, exit_app])
     .setup(|app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(
