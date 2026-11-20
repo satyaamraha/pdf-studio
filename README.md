@@ -10,7 +10,7 @@ An open-source, cross-platform PDF reader and editor: view, annotate, organize, 
 - **UI:** TypeScript + React
 - **Rendering:** PDF.js (Apache-2.0) for pages, text layer, search and outline
 - **Page operations, forms, stamping:** pdf-lib (MIT)
-- **Text editing and true redaction:** PDFium (Apache-2.0/BSD) via WASM, added in the edit stage
+- **Text editing, image editing and true redaction:** PDFium (BSD-3-Clause / Apache-2.0) compiled to WebAssembly, via @embedpdf/pdfium (MIT); loaded only when editing
 - **Digital signatures:** node-forge, used under its BSD-3-Clause licence (it's dual-licensed BSD-3-Clause or GPL-2.0; we choose BSD), for digital IDs and RSA signing; the CMS signature structure (PAdES baseline) and the incremental PDF update are written in this project
 - **OCR:** Tesseract (Apache-2.0)
 
@@ -87,6 +87,15 @@ An open-source, cross-platform PDF reader and editor: view, annotate, organize, 
 
 Limits for now: only RSA digital IDs can sign and be checked (most personal IDs are RSA); there's no trusted-authority (CA) check or timestamp server yet, so identities show as "not verified by a trusted authority"; signing saves a new signed copy.
 
+**Stage 6 (edit and redact) is done:**
+
+- Edit text in place: click a line, change it; the original font is kept when it has every character you type, otherwise the closest standard font (Helvetica, Times, Courier) is used. Position, size and colour are kept, and so is reading order
+- Pictures: move, resize (keeps its shape) and delete; add new pictures
+- True redaction: mark areas (drag) or text (select it), then apply. Text is removed character by character (partly covered lines are rebuilt from what's left), covered parts of pictures are blacked out in the image data itself, drawings and comments in the area are removed, form fields there are deleted with their values, PDF Studio's own annotations there go too, and the old page content is dropped from the file. Optionally removes document info (title, author…)
+- Every edit is one undo step, shared with everything else
+
+Limits for now: changed text doesn't reflow the rest of the line or paragraph; rotated text can't be edited; drawings only partly under a redaction mark are covered but not cut; the editing engine downloads (2 MB) the first time Edit is used in the web app, and works offline after that.
+
 **Web app (PWA) is done:**
 
 - Installable from Chrome, Edge and Safari ("Install app" button, or Add to Home Screen); runs in its own window
@@ -117,6 +126,7 @@ Limits for now: form text is drawn with Helvetica, so values in non-Latin script
 | Organize pages | ⌘⇧O | Ctrl+Shift+O |
 | Forms (place fields) | ⌘⇧F | Ctrl+Shift+F |
 | Sign | ⌘⇧G | Ctrl+Shift+G |
+| Edit page content | ⌘⇧E | Ctrl+Shift+E |
 | Combine files / reduce file size | ⌘⌥C / ⌘⌥R | Ctrl+Alt+C / Ctrl+Alt+R |
 
 With Annotate on, single keys pick a tool: **V** select, **H** highlight, **U** underline, **K** strikethrough, **N** note, **D** draw, **R** rectangle, **O** ellipse, **L** line, **A** arrow, **T** text box, **S** stamp. **Esc** deselects, then returns to Select.
@@ -154,9 +164,10 @@ In the web UI during development, `http://localhost:1420/?file=/samples/sample.p
 - `src/lib/pdfForms.ts` — writes values and placed fields into the PDF with pdf-lib, and reads placed fields back out
 - `src/lib/signatures.ts` — saved handwritten signatures; `digitalId.ts` — importing and creating digital IDs
 - `src/lib/cms.ts` — building and reading CMS signatures; `pdfSign.ts` — signing by incremental update; `pdfVerify.ts` — checking signatures
+- `src/lib/pdfium.ts` — loading the PDFium engine; `pdfEdit.ts` — redaction, editing text and images
 - `src/lib/pdfPages.ts` — page operations (reorder, rotate, delete, insert, merge, extract) and compression
 - `src/lib/pdfWrite.ts` — writes annotations into the PDF with pdf-lib, and reads PDF Studio's own back out on open
-- `src/components/` — `Viewer` (scrolling and layout), `PageView` (one page: drawing, text, links, highlights), `AnnotationLayer` (drawing and editing annotations on a page), `AnnotateBar`, `CommentsPanel`, `OrganizeView`, `CompressDialog`, `FormLayer` (inputs over the page, placing fields), `FormsBar`, `SignMenu`, `SignatureDialog`, `DigitalSignDialog`, `SignatureBanner`, `Sidebar`, `Toolbar`, `SearchBar`
+- `src/components/` — `Viewer` (scrolling and layout), `PageView` (one page: drawing, text, links, highlights), `AnnotationLayer` (drawing and editing annotations on a page), `AnnotateBar`, `CommentsPanel`, `OrganizeView`, `CompressDialog`, `FormLayer` (inputs over the page, placing fields), `FormsBar`, `SignMenu`, `SignatureDialog`, `DigitalSignDialog`, `SignatureBanner`, `EditLayer`, `EditBar`, `Sidebar`, `Toolbar`, `SearchBar`
 - `src/pwa.ts` — service worker registration, install prompt and update notice (web only)
 - `src/lib/platform.ts` — desktop vs browser: file dialogs, File System Access (save in place), drag and drop, "Open with"
 - `src-tauri/` — the desktop shell: reading and safely writing files, native menu, "Open With" handling

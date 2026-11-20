@@ -3,6 +3,7 @@ import {
   ChevronLeft,
   ChevronRight,
   FormInput,
+  PencilRuler,
   Signature,
   LayoutGrid,
   Minimize2,
@@ -30,6 +31,7 @@ interface Props {
   searchOpen: boolean;
   annotateOpen: boolean;
   formsOpen: boolean;
+  editOpen: boolean;
   organizeOpen: boolean;
   canEdit: boolean;
   canSign: boolean;
@@ -44,6 +46,7 @@ interface Props {
   onToggleSearch: () => void;
   onToggleAnnotate: () => void;
   onToggleForms: () => void;
+  onToggleEdit: () => void;
   onSign: () => void;
   onToggleOrganize: () => void;
   onCompress: () => void;
@@ -168,6 +171,15 @@ export function Toolbar(p: Props) {
         disabled={p.organizeOpen || !p.canEdit}
       >
         <FormInput size={17} /> <span>Forms</span>
+      </button>
+      <button
+        className={`icon-btn wide${p.editOpen && !p.organizeOpen ? ' on' : ''}`}
+        onClick={p.onToggleEdit}
+        title={p.canEdit ? 'Edit: change text and pictures, redact' : 'This document can’t be changed'}
+        aria-pressed={p.editOpen}
+        disabled={p.organizeOpen || !p.canEdit}
+      >
+        <PencilRuler size={17} /> <span>Edit</span>
       </button>
       <button
         className={`icon-btn wide${p.organizeOpen ? ' on' : ''}`}

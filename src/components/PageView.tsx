@@ -7,6 +7,7 @@ import type { Matrix } from '../lib/geometry';
 import type { LinkTarget } from '../lib/view';
 import { widgetFromAnnotation, type Widget } from '../lib/forms';
 import { AnnotationLayer, type AnnotUi } from './AnnotationLayer';
+import { EditLayer, type EditUi } from './EditLayer';
 import { FormLayer, type FormUi } from './FormLayer';
 
 /** Positions are percentages of the page box so they survive zoom without recomputing. */
@@ -42,9 +43,10 @@ interface Props {
   /** Form fields placed in PDF Studio on this page. */
   placed: Widget[];
   formUi: FormUi;
+  editUi: EditUi;
 }
 
-function PageViewImpl({ doc, index, top, left, width, height, scale, rotation, hits, activeHit, onLink, matrix, annots, ui, placed, formUi }: Props) {
+function PageViewImpl({ doc, index, top, left, width, height, scale, rotation, hits, activeHit, onLink, matrix, annots, ui, placed, formUi, editUi }: Props) {
   const pageRef = useRef<HTMLDivElement>(null);
   const canvasHostRef = useRef<HTMLDivElement>(null);
   const textRef = useRef<HTMLDivElement>(null);
@@ -208,6 +210,7 @@ function PageViewImpl({ doc, index, top, left, width, height, scale, rotation, h
       {(widgets.length > 0 || placed.length > 0 || formUi.designing) && (
         <FormLayer page={index} widgets={widgets} placed={placed} matrix={matrix} {...formUi} />
       )}
+      <EditLayer page={index} matrix={matrix} {...editUi} />
       <div className="link-layer">
         {links.map((l, i) => (
           <a

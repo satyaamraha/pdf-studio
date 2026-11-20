@@ -48,6 +48,12 @@ export default defineConfig({
         globIgnores: ['samples/**', 'pdfjs/cmaps/**'],
         runtimeCaching: [
           {
+            // The editing engine (4 MB) is kept after its first use rather than downloaded on install.
+            urlPattern: ({ url }) => url.pathname.endsWith('.wasm'),
+            handler: 'CacheFirst',
+            options: { cacheName: 'pdf-engine', expiration: { maxEntries: 4 } },
+          },
+          {
             urlPattern: ({ url }) => url.pathname.includes('/pdfjs/cmaps/'),
             handler: 'CacheFirst',
             options: {

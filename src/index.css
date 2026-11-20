@@ -2046,3 +2046,128 @@ button.secondary:hover {
 .sig-details li.unknown {
   border-left-color: #e8890c;
 }
+
+/* ---------- Edit page content ---------- */
+.editbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 10px;
+  background: var(--chrome);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.editbar > * {
+  flex-shrink: 0;
+}
+.editbar .spacer {
+  flex: 1;
+  flex-shrink: 1;
+}
+.redact-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+button.primary.danger-fill {
+  background: #c92a2a;
+  color: #fff;
+}
+.working-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.edit-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+.edit-layer.drawing {
+  pointer-events: auto;
+  cursor: crosshair;
+  touch-action: none;
+}
+.edit-layer.busy {
+  cursor: progress;
+}
+.edit-run {
+  position: absolute;
+  pointer-events: auto;
+  cursor: text;
+  border-radius: 2px;
+}
+.edit-run:hover {
+  outline: 1.5px solid var(--accent);
+  background: rgb(51 85 224 / 0.08);
+}
+.edit-input {
+  position: absolute;
+  margin: 0;
+  padding: 0 2px;
+  border: none;
+  outline: 2px solid var(--accent);
+  border-radius: 2px;
+  background: #fff;
+  color: #000;
+  font-family: Helvetica, Arial, sans-serif;
+  pointer-events: auto;
+  user-select: text;
+  -webkit-user-select: text;
+  z-index: 2;
+}
+.image-frame {
+  position: absolute;
+  border: 1.5px dashed var(--accent);
+  background: rgb(51 85 224 / 0.06);
+  pointer-events: auto;
+  cursor: move;
+  touch-action: none;
+}
+.image-frame.selected {
+  border-style: solid;
+}
+.image-frame.draft {
+  pointer-events: none;
+}
+.redact-mark {
+  position: absolute;
+  background: rgb(0 0 0 / 0.35);
+  outline: 2px solid #e03131;
+  outline-offset: 0;
+}
+.redact-mark.draft {
+  pointer-events: none;
+}
+.redact-remove {
+  position: absolute;
+  top: -9px;
+  right: -9px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: #e03131;
+  color: #fff;
+  pointer-events: auto;
+}
+/* While editing, other page overlays keep out of the way. */
+.viewer[class*='tool-edit-'] .link-layer,
+.viewer[class*='tool-edit-'] .annot-layer,
+.viewer[class*='tool-edit-'] .form-layer {
+  pointer-events: none !important;
+}
+.viewer[class*='tool-edit-'] .annot-layer *,
+.viewer[class*='tool-edit-'] .form-layer * {
+  pointer-events: none !important;
+}
+.viewer.tool-edit-redact-text .textLayer ::selection {
+  background: rgb(224 49 49 / 0.35);
+}

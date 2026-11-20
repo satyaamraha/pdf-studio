@@ -6,6 +6,7 @@ import { pageMatrix } from '../lib/geometry';
 import { clampScale, type LinkTarget, type Zoom } from '../lib/view';
 import type { Widget } from '../lib/forms';
 import type { AnnotUi } from './AnnotationLayer';
+import type { EditUi } from './EditLayer';
 import type { FormUi } from './FormLayer';
 import { PageView } from './PageView';
 
@@ -37,6 +38,7 @@ interface Props {
   annotUi: AnnotUi;
   placedByPage: Map<number, Widget[]>;
   formUi: FormUi;
+  editUi: EditUi;
   onPageChange: (page: number) => void;
   onScaleChange: (scale: number) => void;
   onZoomBy: (factor: number) => void;
@@ -56,7 +58,7 @@ function pageAt(tops: number[], y: number): number {
 }
 
 export function Viewer(props: Props) {
-  const { doc, sizes, zoom, rotation, initialPage, night, hitsByPage, activeHit, apiRef, annotsByPage, annotUi, placedByPage, formUi } = props;
+  const { doc, sizes, zoom, rotation, initialPage, night, hitsByPage, activeHit, apiRef, annotsByPage, annotUi, placedByPage, formUi, editUi } = props;
   const scrollRef = useRef<HTMLDivElement>(null);
   const [box, setBox] = useState({ width: 0, height: 0 });
 
@@ -323,12 +325,13 @@ export function Viewer(props: Props) {
         ui={annotUi}
         placed={placedByPage.get(i) ?? NO_WIDGETS}
         formUi={formUi}
+        editUi={editUi}
       />,
     );
   }
 
   return (
-    <div ref={scrollRef} className={`viewer${night ? ' night' : ''} tool-${annotUi.tool}`} onScroll={onScroll} tabIndex={0}>
+    <div ref={scrollRef} className={`viewer${night ? ' night' : ''} tool-${editUi.tool ? 'edit-' + editUi.tool : annotUi.tool}`} onScroll={onScroll} tabIndex={0}>
       <div ref={pagesRef} className="pages" style={{ height: layout.totalHeight, width: layout.contentWidth }}>
         {pages}
       </div>

@@ -117,6 +117,7 @@ export default function App() {
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
   const [organizeOpen, setOrganizeOpen] = useState(false);
   const [formsOpen, setFormsOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const [signNonce, setSignNonce] = useState(0);
   const [compressOpen, setCompressOpen] = useState(false);
   const organizeApi = useRef<OrganizeApi | null>(null);
@@ -569,6 +570,10 @@ export default function App() {
         if (isTyping(document.activeElement)) return void document.execCommand(cmd);
         if (organizeOpen && organizeApi.current) return organizeApi.current[cmd]();
         return tab && updateAnnots(tab.id, cmd === 'undo' ? undo : redo);
+      case 'edit':
+        setAnnotateOpen(false);
+        setFormsOpen(false);
+        return tab && !tab.readOnly && setEditOpen((v) => !v);
       case 'sign':
         return tab && !tab.readOnly && setSignNonce((n) => n + 1);
       case 'forms':
@@ -628,6 +633,7 @@ export default function App() {
         'shift+s': 'save_as',
         'shift+o': 'organize',
         'shift+f': 'forms',
+        'shift+e': 'edit',
         z: 'undo',
         'shift+z': 'redo',
         y: 'redo',
@@ -795,15 +801,23 @@ export default function App() {
           onAuthor={setAuthor}
           onSave={() => void saveTab(active.id)}
           formsOpen={formsOpen}
+          editOpen={editOpen}
           signNonce={signNonce}
           // Annotating and placing form fields use the page differently: one at a time.
           onToggleAnnotate={() => {
             setAnnotateOpen((v) => !v);
             setFormsOpen(false);
+            setEditOpen(false);
           }}
           onToggleForms={() => {
             setFormsOpen((v) => !v);
             setAnnotateOpen(false);
+            setEditOpen(false);
+          }}
+          onToggleEdit={() => {
+            setEditOpen((v) => !v);
+            setAnnotateOpen(false);
+            setFormsOpen(false);
           }}
           onToggleOrganize={() => setOrganizeOpen((v) => !v)}
           onCompress={() => setCompressOpen(true)}

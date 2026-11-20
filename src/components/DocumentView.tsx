@@ -32,6 +32,10 @@ const DigitalSignDialog = lazy(() => import('./DigitalSignDialog').then((m) => (
 import { SignMenu } from './SignMenu';
 import type { FormApi, FormUi } from './FormLayer';
 import { FormsBar } from './FormsBar';
+import { ConfirmDialog } from './ConfirmDialog';
+import { EditBar } from './EditBar';
+import type { EditApi, EditTool, EditUi } from './EditLayer';
+import type { Mark, PageImage } from '../lib/pdfEdit';
 import type { OrganizeApi, OutputPart } from './OrganizeView';
 // Organizing pulls in pdf-lib, so it loads when first opened.
 const OrganizeView = lazy(() => import('./OrganizeView').then((m) => ({ default: m.OrganizeView })));
@@ -63,6 +67,7 @@ interface Props {
   annotateOpen: boolean;
   organizeOpen: boolean;
   formsOpen: boolean;
+  editOpen: boolean;
   /** Changes when the toolbar's Sign button is pressed. */
   signNonce: number;
   organizeApi: React.RefObject<OrganizeApi | null>;
@@ -77,6 +82,7 @@ interface Props {
   onToggleAnnotate: () => void;
   onToggleOrganize: () => void;
   onToggleForms: () => void;
+  onToggleEdit: () => void;
   onCompress: () => void;
   onOpenNew: (name: string, base: Uint8Array, items: Annotation[], defs: FieldDef[], fields: FieldValues) => void;
   onSaveParts: (makeParts: () => Promise<OutputPart[]>) => Promise<void>;
@@ -451,6 +457,22 @@ export function DocumentView(props: Props) {
 
   // Highlight / underline / strikethrough: select text with the tool active.
   const onPointerUp = () => {
+    if (editTool === 'redact-text') {
+      // Selected text becomes redaction marks, one per line.
+      window.setTimeout(() => {
+        const found = readSelection(matrixFor);
+        if (!found.length) return;
+        const added: Mark[] = [];
+        for (const f of found) {
+          for (const q of f.quads) {
+            added.push({ page: f.page, box: { x1: Math.min(q[0], q[4]) - 0.5, y1: Math.min(q[5], q[7]) - 0.5, x2: Math.max(q[2], q[6]) + 0.5, y2: Math.max(q[1], q[3]) + 0.5 } });
+          }
+        }
+        setMarks((m) => [...m, ...added]);
+        window.getSelection()?.removeAllRanges();
+      }, 0);
+      return;
+    }
     if (!isMarkup(tool)) return;
     window.setTimeout(() => {
       const found = readSelection(matrixFor);
@@ -645,8 +667,141 @@ export function DocumentView(props: Props) {
     setSelectedDefId(null);
   };
 
-  const keyState = useRef({ tool, selectedId, searchOpen, annotateOpen: props.annotateOpen, readOnly: tab.readOnly, organizing: props.organizeOpen, selectedDefId });
-  keyState.current = { tool, selectedId, searchOpen, annotateOpen: props.annotateOpen, readOnly: tab.readOnly, organizing: props.organizeOpen, selectedDefId };
+  // ----- editing page content (PDFium) -----
+  const [editTool, setEditTool] = useState<EditTool | null>(null);
+  const [marks, setMarks] = useState<Mark[]>([]);
+  const [scrub, setScrub] = useState(true);
+  const [images, setImages] = useState<Map<number, PageImage[]>>(new Map());
+  const [selectedImage, setSelectedImage] = useState<{ page: number; index: number } | null>(null);
+  const [picture, setPicture] = useState<{ rgba: Uint8ClampedArray; width: number; height: number } | null>(null);
+  const [editBusy, setEditBusy] = useState<string | null>(null);
+  const [confirmRedact, setConfirmRedact] = useState(false);
+  const baseRef = useRef(tab.annots.base);
+  baseRef.current = tab.annots.base;
+
+  useEffect(() => {
+    setEditTool(props.editOpen ? 'text' : null);
+    if (!props.editOpen) {
+      setSelectedImage(null);
+      setPicture(null);
+    }
+  }, [props.editOpen]);
+
+  // Image positions belong to one version of the file.
+  useEffect(() => {
+    setImages(new Map());
+    setSelectedImage(null);
+  }, [tab.annots.base]);
+
+  const runEdit = useCallback(
+    async (label: string, op: (base: Uint8Array, engine: typeof import('../lib/pdfEdit')) => Promise<{ base: Uint8Array; items?: Annotation[]; defs?: FieldDef[] }>) => {
+      setEditBusy(label);
+      try {
+        const engine = await import('../lib/pdfEdit');
+        const result = await op(baseRef.current, engine);
+        onAnnotsRef.current((s) => commitDocument(s, result.base, result.items ?? s.items, result.defs ?? s.defs));
+      } catch (err) {
+        props.onError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setEditBusy(null);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+  const editApi = useMemo<EditApi>(
+    () => ({
+      replaceText: (page, box, text) =>
+        void runEdit('Updating text…', async (base, e) => {
+          const r = await e.replaceText(base, page, box, text);
+          if (!r.fontKept) props.onError('The original font doesn’t have all of those characters, so the closest standard font was used.');
+          return { base: r.bytes };
+        }),
+      addMark: (mark) => setMarks((m) => [...m, mark]),
+      removeMark: (i) => setMarks((m) => m.filter((_, k) => k !== i)),
+      requestImages: (page) => {
+        const base = baseRef.current;
+        void import('../lib/pdfEdit')
+          .then((e) => e.listImages(base, page))
+          .then((list) => {
+            if (baseRef.current === base) setImages((m) => new Map(m).set(page, list));
+          })
+          .catch(() => undefined);
+      },
+      selectImage: setSelectedImage,
+      editImage: (page, index, box) => void runEdit(box ? 'Moving picture…' : 'Removing picture…', async (base, e) => ({ base: await e.editImage(base, page, index, box) })),
+      placeImage: (page, box) => {
+        const pic = pictureRef.current;
+        if (!pic) return;
+        setPicture(null);
+        setEditTool('image');
+        void runEdit('Adding picture…', async (base, e) => ({ base: await e.addImage(base, page, box, pic.rgba, pic.width, pic.height) }));
+      },
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [runEdit],
+  );
+  const pictureRef = useRef(picture);
+  pictureRef.current = picture;
+
+  const editUi: EditUi = useMemo(
+    () => ({
+      tool: editTool,
+      doc,
+      marks,
+      images,
+      selectedImage,
+      pending: picture ? { width: picture.width, height: picture.height } : null,
+      busy: !!editBusy,
+      api: editApi,
+    }),
+    [editTool, doc, marks, images, selectedImage, picture, editBusy, editApi],
+  );
+
+  const choosePicture = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/png,image/jpeg,image/webp,image/gif';
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      try {
+        const bmp = await createImageBitmap(file);
+        // Large photos are scaled down; 2400px is plenty for print.
+        const s = Math.min(1, 2400 / Math.max(bmp.width, bmp.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(bmp.width * s);
+        canvas.height = Math.round(bmp.height * s);
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+        bmp.close();
+        setPicture({ rgba: ctx.getImageData(0, 0, canvas.width, canvas.height).data, width: canvas.width, height: canvas.height });
+      } catch {
+        props.onError("That picture couldn't be opened.");
+      }
+    };
+    input.click();
+  };
+
+  const applyRedactions = () => {
+    setConfirmRedact(false);
+    const list = marks;
+    void runEdit('Redacting…', async (base, e) => {
+      const out = await e.redact(base, list, { scrubMetadata: scrub });
+      // PDF Studio's own annotations and fields under a mark go too (a highlight keeps a copy of its text).
+      const hit = (page: number, b: Box) => list.some((m) => m.page === page && b.x1 < m.box.x2 && b.x2 > m.box.x1 && b.y1 < m.box.y2 && b.y2 > m.box.y1);
+      return {
+        base: out,
+        items: itemsRef.current.filter((a) => !hit(a.page, annotBox(a))),
+        defs: tab.annots.defs.filter((d) => !hit(d.page, d.box)),
+      };
+    }).then(() => setMarks([]));
+  };
+
+  const keyState = useRef({ tool, selectedId, searchOpen, annotateOpen: props.annotateOpen, readOnly: tab.readOnly, organizing: props.organizeOpen, selectedDefId, editTool, selectedImage });
+  keyState.current = { tool, selectedId, searchOpen, annotateOpen: props.annotateOpen, readOnly: tab.readOnly, organizing: props.organizeOpen, selectedDefId, editTool, selectedImage };
   const deleteDefRef = useRef(deleteDef);
   deleteDefRef.current = deleteDef;
 
@@ -656,7 +811,9 @@ export function DocumentView(props: Props) {
       // The organize view has its own keys.
       if (k.organizing || isTyping(e.target) || e.metaKey || e.ctrlKey || e.altKey) return;
       const page = viewRef.current.page;
-      if ((e.key === 'Delete' || e.key === 'Backspace') && k.selectedDefId) deleteDefRef.current(k.selectedDefId);
+      if ((e.key === 'Delete' || e.key === 'Backspace') && k.editTool === 'image' && k.selectedImage) editApi.editImage(k.selectedImage.page, k.selectedImage.index, null);
+      else if (e.key === 'Escape' && k.selectedImage) setSelectedImage(null);
+      else if ((e.key === 'Delete' || e.key === 'Backspace') && k.selectedDefId) deleteDefRef.current(k.selectedDefId);
       else if (e.key === 'Escape' && k.selectedDefId) setSelectedDefId(null);
       else if (e.key === 'Escape' && digitalPlanRef.current) {
         setDigitalPlan(null);
@@ -676,7 +833,7 @@ export function DocumentView(props: Props) {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [goToPage, sizes.length, stableApi]);
+  }, [goToPage, sizes.length, stableApi, editApi]);
 
   // ----- zoom -----
   const setZoom = (zoom: Zoom) => onView({ zoom });
@@ -719,6 +876,8 @@ export function DocumentView(props: Props) {
         }}
         onToggleAnnotate={props.onToggleAnnotate}
         onToggleForms={props.onToggleForms}
+        editOpen={props.editOpen}
+        onToggleEdit={props.onToggleEdit}
         onSign={() => {
           setSignTarget(null);
           setSignMenuOpen((v) => !v);
@@ -754,6 +913,42 @@ export function DocumentView(props: Props) {
           onError={props.onError}
         />
         </Suspense>
+      )}
+      {props.editOpen && !props.organizeOpen && (
+        <EditBar
+          tool={editTool}
+          marks={marks.length}
+          scrub={scrub}
+          busy={editBusy}
+          canUndo={tab.annots.past.length > 0}
+          canRedo={tab.annots.future.length > 0}
+          hasPicture={!!picture}
+          onTool={(t) => {
+            setEditTool(t);
+            setSelectedImage(null);
+            if (t === 'add-image' && !picture) choosePicture();
+          }}
+          onScrub={setScrub}
+          onApply={() => setConfirmRedact(true)}
+          onClearMarks={() => setMarks([])}
+          onChoosePicture={choosePicture}
+          onUndo={() => onAnnots(undo)}
+          onRedo={() => onAnnots(redo)}
+        />
+      )}
+      {confirmRedact && (
+        <ConfirmDialog
+          request={{
+            title: `Redact ${marks.length} area${marks.length === 1 ? '' : 's'}?`,
+            message:
+              'Everything under the marks (text, pictures, drawings, comments and form fields) is removed from the document and covered with black boxes. You can undo until you close the document, but once you save, the removed content is gone from the file.',
+            actions: [
+              { label: 'Cancel' },
+              { label: 'Redact', kind: 'primary', run: applyRedactions },
+            ],
+          }}
+          onClose={() => setConfirmRedact(false)}
+        />
       )}
       {props.formsOpen && !props.organizeOpen && (
         <FormsBar
@@ -923,6 +1118,7 @@ export function DocumentView(props: Props) {
             annotsByPage={annotsByPage}
             placedByPage={placedByPage}
             formUi={formUi}
+            editUi={editUi}
             annotUi={annotUi}
             onPageChange={(page) => onView({ page })}
             onScaleChange={(scale) => onView({ scale })}
