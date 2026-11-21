@@ -2171,3 +2171,72 @@ button.primary.danger-fill {
 .viewer.tool-edit-redact-text .textLayer ::selection {
   background: rgb(224 49 49 / 0.35);
 }
+
+/* ---------- Password protection ---------- */
+.modal.protect-modal {
+  width: min(460px, 100%);
+}
+.pw-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: -2px 0 4px 24px;
+}
+.perm-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-left: 24px;
+  font-size: 12px;
+}
+.note-box {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--text) !important;
+}
+.ocr-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+  font-size: 12px;
+}
+.ocr-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--chrome-2);
+  overflow: hidden;
+}
+.ocr-bar > div {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s;
+}
+.range-input {
+  width: 110px;
+}
+.img-list {
+  max-height: 200px;
+  overflow-y: auto;
+  margin: 0 0 10px;
+  padding: 0 0 0 22px;
+  font-size: 12px;
+}
+.img-list li {
+  padding: 2px 0;
+}
+.img-list li {
+  display: list-item;
+}
+.img-list li > * {
+  vertical-align: middle;
+}
+.img-name {
+  display: inline-block;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-right: 6px;
+}

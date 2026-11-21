@@ -1,5 +1,6 @@
 import { boxFromPoints, padBox, type Box, type Point } from './geometry';
 import type { FieldDef, FieldValues } from './forms';
+import type { Security } from './pdfSecurity';
 import { wrapText } from './textMetrics';
 
 /**
@@ -266,6 +267,8 @@ export interface Snapshot {
   fields: FieldValues;
   /** Form fields placed in PDF Studio. */
   defs: FieldDef[];
+  /** Password protection applied when saving (null = none). */
+  security: Security | null;
 }
 
 /**
@@ -280,7 +283,7 @@ export interface DocState extends Snapshot {
   saved: Snapshot;
 }
 
-const snap = (s: Snapshot): Snapshot => ({ base: s.base, items: s.items, fields: s.fields, defs: s.defs });
+const snap = (s: Snapshot): Snapshot => ({ base: s.base, items: s.items, fields: s.fields, defs: s.defs, security: s.security });
 
 export function initialDocState(
   base: Uint8Array,
@@ -288,10 +291,11 @@ export function initialDocState(
   unsaved = false,
   fields: FieldValues = {},
   defs: FieldDef[] = [],
+  security: Security | null = null,
 ): DocState {
-  const current = { base, items, fields, defs };
+  const current = { base, items, fields, defs, security };
   // A brand-new document (e.g. combined files) starts unsaved.
-  const saved = unsaved ? { base: new Uint8Array(), items: [], fields: {}, defs: [] } : current;
+  const saved = unsaved ? { base: new Uint8Array(), items: [], fields: {}, defs: [], security: null } : current;
   return { ...current, past: [], future: [], saved };
 }
 
@@ -311,6 +315,11 @@ export function commitItems(state: DocState, items: Annotation[], previous: Anno
 /** Applies a change to the file itself (page edits, compression), with the annotations and fields that go with it. */
 export function commitDocument(state: DocState, base: Uint8Array, items: Annotation[], defs: FieldDef[] = state.defs, fields: FieldValues = state.fields): DocState {
   return { ...state, base, items, defs, fields, past: push(state.past, snap(state)), future: [] };
+}
+
+/** Changes password protection (applied when saving). */
+export function commitSecurity(state: DocState, security: Security | null): DocState {
+  return { ...state, security, past: push(state.past, snap(state)), future: [] };
 }
 
 /** Applies a form change (values typed in, fields placed or edited). */
@@ -337,7 +346,7 @@ export function redo(state: DocState): DocState {
 
 export function isDirty(state: DocState): boolean {
   const s = state.saved;
-  return state.items !== s.items || state.base !== s.base || state.fields !== s.fields || state.defs !== s.defs;
+  return state.items !== s.items || state.base !== s.base || state.fields !== s.fields || state.defs !== s.defs || state.security !== s.security;
 }
 
 export function markSaved(state: DocState, saved: Snapshot): DocState {

@@ -45,13 +45,19 @@ export default defineConfig({
         globPatterns: ['**/*.{js,mjs,css,html,svg,png,ico,webmanifest,pfb,ttf}'],
         // Character maps (168 small files) are only needed for Chinese, Japanese and Korean
         // PDFs, so they are fetched when such a PDF is opened and kept from then on.
-        globIgnores: ['samples/**', 'pdfjs/cmaps/**'],
+        globIgnores: ['samples/**', 'pdfjs/cmaps/**', 'tesseract/**'],
         runtimeCaching: [
           {
             // The editing engine (4 MB) is kept after its first use rather than downloaded on install.
             urlPattern: ({ url }) => url.pathname.endsWith('.wasm'),
             handler: 'CacheFirst',
             options: { cacheName: 'pdf-engine', expiration: { maxEntries: 4 } },
+          },
+          {
+            // OCR engine and language data: kept after first use.
+            urlPattern: ({ url }) => url.pathname.includes('/tesseract/') || url.href.includes('@tesseract.js-data/'),
+            handler: 'CacheFirst',
+            options: { cacheName: 'ocr', expiration: { maxEntries: 30 } },
           },
           {
             urlPattern: ({ url }) => url.pathname.includes('/pdfjs/cmaps/'),

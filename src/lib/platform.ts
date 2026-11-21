@@ -39,6 +39,10 @@ export async function fileToOpened(file: File): Promise<OpenedFile> {
   return { name: file.name, data: new Uint8Array(await file.arrayBuffer()) };
 }
 
+export function isImageName(name: string): boolean {
+  return /\.(png|jpe?g|webp|gif|bmp|avif|heic|heif|tiff?)$/i.test(name);
+}
+
 export function isPdfName(name: string): boolean {
   return name.toLowerCase().endsWith('.pdf');
 }
@@ -146,9 +150,18 @@ export async function writePath(path: string, bytes: Uint8Array): Promise<void> 
   await invoke('write_pdf', bytes, { headers: { 'x-path': encodeURIComponent(path) } });
 }
 
+const MIME: Record<string, string> = {
+  pdf: 'application/pdf',
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+};
+
 /** Browser fallback: hands the file to the browser's downloads. */
 export function downloadFile(bytes: Uint8Array, name: string): void {
-  const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: 'application/pdf' }));
+  const ext = name.split('.').pop()?.toLowerCase() ?? 'pdf';
+  const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: MIME[ext] ?? 'application/octet-stream' }));
   const a = document.createElement('a');
   a.href = url;
   a.download = name;
@@ -250,5 +263,64 @@ export function readDroppedFiles(dt: DataTransfer): Promise<OpenedFile[]> {
 export function onLaunchFiles(handler: (files: OpenedFile[]) => void): void {
   window.launchQueue?.setConsumer((params) => {
     if (params.files.length) void Promise.all(params.files.map(handleToOpened)).then(handler);
+  });
+}
+
+// ----- other file types (exports, pictures) -----
+
+export interface FileKind {
+  description: string;
+  extensions: string[];
+  mime: string;
+}
+
+export const WORD: FileKind = { description: 'Word document', extensions: ['docx'], mime: MIME.docx };
+const PICTURES: FileKind = { description: 'Pictures', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'heic', 'heif', 'avif', 'tif', 'tiff'], mime: 'image/*' };
+
+/**
+ * Saves one file of another type (e.g. .docx): asks where on desktop and in Chrome/Edge,
+ * downloads elsewhere. Call straight after a click. Returns the saved name, or null if cancelled.
+ */
+export async function saveFileAs(name: string, kind: FileKind, make: () => Promise<Uint8Array>): Promise<string | null> {
+  if (isTauri) {
+    const { save } = await import('@tauri-apps/plugin-dialog');
+    const path = await save({ defaultPath: name, filters: [{ name: kind.description, extensions: kind.extensions }] });
+    if (!path) return null;
+    const final = kind.extensions.some((e) => path.toLowerCase().endsWith(`.${e}`)) ? path : `${path}.${kind.extensions[0]}`;
+    await writePath(final, await make());
+    return basename(final);
+  }
+  if (canAccessFiles) {
+    let handle: FileSystemFileHandle;
+    try {
+      handle = await window.showSaveFilePicker!({ suggestedName: name, types: [{ description: kind.description, accept: { [kind.mime]: kind.extensions.map((e) => `.${e}`) } }] });
+    } catch (err) {
+      if (isAbort(err)) return null;
+      throw err;
+    }
+    await writeHandle(handle, await make());
+    return handle.name;
+  }
+  downloadFile(await make(), name);
+  return name;
+}
+
+/** Lets the user pick pictures (to make a PDF from them). */
+export async function pickImageFiles(): Promise<File[]> {
+  if (isTauri) {
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    const selected = await open({ multiple: true, directory: false, filters: [{ name: PICTURES.description, extensions: PICTURES.extensions }] });
+    const paths = selected == null ? [] : Array.isArray(selected) ? selected : [selected];
+    const files = await Promise.all(paths.map(readPath));
+    return files.map((f) => new File([f.data as BlobPart], f.name));
+  }
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.multiple = true;
+    input.onchange = () => resolve(Array.from(input.files ?? []));
+    input.addEventListener('cancel', () => resolve([]));
+    input.click();
   });
 }

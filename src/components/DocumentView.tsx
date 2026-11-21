@@ -17,7 +17,7 @@ import {
 import { emptyValue, uniqueFieldName, widgetFromDef, type FieldDef, type FieldKind, type FieldValue, type FieldValues, type Widget } from '../lib/forms';
 import { pageMatrix, type Box } from '../lib/geometry';
 import { loadSignatures, storeSignatures, type SavedSignature, type SignatureRole } from '../lib/signatures';
-import { CSS_UNITS, resolveDest, type OutlineNode } from '../lib/pdf';
+import { CSS_UNITS, getText, resolveDest, type OutlineNode } from '../lib/pdf';
 import { openExternal } from '../lib/platform';
 import { makeMatcher, searchDocument, type SearchHit } from '../lib/search';
 import { readSelection } from '../lib/selection';
@@ -33,6 +33,7 @@ import { SignMenu } from './SignMenu';
 import type { FormApi, FormUi } from './FormLayer';
 import { FormsBar } from './FormsBar';
 import { ConfirmDialog } from './ConfirmDialog';
+import { OcrDialog } from './OcrDialog';
 import { EditBar } from './EditBar';
 import type { EditApi, EditTool, EditUi } from './EditLayer';
 import type { Mark, PageImage } from '../lib/pdfEdit';
@@ -87,6 +88,8 @@ interface Props {
   onOpenNew: (name: string, base: Uint8Array, items: Annotation[], defs: FieldDef[], fields: FieldValues) => void;
   onSaveParts: (makeParts: () => Promise<OutputPart[]>) => Promise<void>;
   onError: (message: string) => void;
+  onProtect: () => void;
+  onExport: () => void;
   /** Sign with a digital ID: placement null = invisible signature. */
   onDigitalSign: (plan: DigitalSignPlan, placement: { page: number; box: Box; fieldName?: string } | null) => void;
   onToggleSidebar: () => void;
@@ -667,6 +670,27 @@ export function DocumentView(props: Props) {
     setSelectedDefId(null);
   };
 
+  // ----- OCR -----
+  const [ocrOpen, setOcrOpen] = useState(false);
+  const [emptyPages, setEmptyPages] = useState<number[]>([]);
+  const [ocrNoticeHidden, setOcrNoticeHidden] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const empty: number[] = [];
+      for (let i = 0; i < doc.numPages && !cancelled; i++) {
+        const tc = await getText(doc, i);
+        const chars = tc.items.reduce((n, it) => n + ('str' in it ? it.str.trim().length : 0), 0);
+        if (chars < 20) empty.push(i);
+      }
+      if (!cancelled) setEmptyPages(empty);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [doc]);
+  const looksScanned = emptyPages.length > 0 && emptyPages.length >= Math.ceil(doc.numPages / 2);
+
   // ----- editing page content (PDFium) -----
   const [editTool, setEditTool] = useState<EditTool | null>(null);
   const [marks, setMarks] = useState<Mark[]>([]);
@@ -878,6 +902,11 @@ export function DocumentView(props: Props) {
         onToggleForms={props.onToggleForms}
         editOpen={props.editOpen}
         onToggleEdit={props.onToggleEdit}
+        onProtect={props.onProtect}
+        onOcr={() => setOcrOpen(true)}
+        onExport={props.onExport}
+        canProtect={!tab.signed && !tab.readOnly?.startsWith('This encrypted')}
+        isProtected={!!tab.annots.security}
         onSign={() => {
           setSignTarget(null);
           setSignMenuOpen((v) => !v);
@@ -913,6 +942,32 @@ export function DocumentView(props: Props) {
           onError={props.onError}
         />
         </Suspense>
+      )}
+      {looksScanned && !ocrNoticeHidden && !locked && !props.organizeOpen && (
+        <div className="form-notice">
+          This looks like a scanned document: its text can’t be searched or copied yet.
+          <button className="plain-btn small" onClick={() => setOcrOpen(true)}>
+            Make it searchable…
+          </button>
+          <button className="plain-btn small" onClick={() => setOcrNoticeHidden(true)}>
+            Not now
+          </button>
+        </div>
+      )}
+      {ocrOpen && (
+        <OcrDialog
+          doc={doc}
+          base={tab.annots.base}
+          currentPage={view.page}
+          emptyPages={emptyPages}
+          onClose={() => setOcrOpen(false)}
+          onDone={(bytes, n) => {
+            setOcrOpen(false);
+            setOcrNoticeHidden(true);
+            onAnnots((s) => commitDocument(s, bytes, s.items));
+            props.onError(`Text recognised on ${n} page${n === 1 ? '' : 's'}. You can search and copy it now.`);
+          }}
+        />
       )}
       {props.editOpen && !props.organizeOpen && (
         <EditBar

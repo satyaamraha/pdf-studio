@@ -3,7 +3,11 @@ import {
   ChevronLeft,
   ChevronRight,
   FormInput,
+  Lock,
+  LockOpen,
+  FileDown,
   PencilRuler,
+  ScanText,
   Signature,
   LayoutGrid,
   Minimize2,
@@ -47,6 +51,11 @@ interface Props {
   onToggleAnnotate: () => void;
   onToggleForms: () => void;
   onToggleEdit: () => void;
+  onProtect: () => void;
+  onOcr: () => void;
+  onExport: () => void;
+  canProtect: boolean;
+  isProtected: boolean;
   onSign: () => void;
   onToggleOrganize: () => void;
   onCompress: () => void;
@@ -189,6 +198,20 @@ export function Toolbar(p: Props) {
         disabled={!p.canEdit}
       >
         <LayoutGrid size={17} /> <span>Organize</span>
+      </button>
+      <button className="icon-btn" onClick={p.onExport} title="Export as pictures or a Word document" disabled={p.organizeOpen}>
+        <FileDown size={17} />
+      </button>
+      <button className="icon-btn" onClick={p.onOcr} title="Make scanned text searchable (OCR)" disabled={!p.canEdit || p.organizeOpen}>
+        <ScanText size={17} />
+      </button>
+      <button
+        className={`icon-btn${p.isProtected ? ' on' : ''}`}
+        onClick={p.onProtect}
+        title={p.isProtected ? 'Password protection (on)' : 'Password protection'}
+        disabled={!p.canProtect || p.organizeOpen}
+      >
+        {p.isProtected ? <Lock size={17} /> : <LockOpen size={17} />}
       </button>
       <button className="icon-btn" onClick={p.onCompress} title="Reduce file size" disabled={!p.canEdit || p.organizeOpen}>
         <Minimize2 size={17} />

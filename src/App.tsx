@@ -1,14 +1,18 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { Combine, Download, FileText, FolderOpen, Plus, RefreshCw, X } from 'lucide-react';
+import { Combine, Download, FileText, FolderOpen, Images, Lock, Plus, RefreshCw, X } from 'lucide-react';
 const CompressDialog = lazy(() => import('./components/CompressDialog').then((m) => ({ default: m.CompressDialog })));
 import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog';
 import { DocumentView, type Styles } from './components/DocumentView';
 import type { OrganizeApi, OutputPart } from './components/OrganizeView';
 import { PasswordDialog, type PasswordRequest } from './components/PasswordDialog';
+import { ProtectDialog } from './components/ProtectDialog';
+import { ExportDialog, type ExportChoice } from './components/ExportDialog';
+import { ImagesToPdfDialog } from './components/ImagesToPdfDialog';
 import type { SidebarPanel } from './components/Sidebar';
-import { commitDocument, initialDocState, isDirty, redo, undo, type Annotation, type DocState } from './lib/annotations';
+import { commitDocument, commitSecurity, initialDocState, isDirty, redo, undo, type Annotation, type DocState } from './lib/annotations';
 import { getOutline, getPageSizes, loadPdf } from './lib/pdf';
 import { hasSignatures, hasStudioMarker, isEncrypted } from './lib/pdfBytes';
+import type { Security } from './lib/pdfSecurity';
 import { dataUrlToBytes } from './lib/signatures';
 import type { DigitalSignPlan } from './components/DigitalSignDialog';
 import type { Box } from './lib/geometry';
@@ -26,6 +30,7 @@ import {
   chooseSavePath,
   downloadFile,
   guardClose,
+  isImageName,
   isPdfName,
   isTauri,
   onMenuCommand,
@@ -36,6 +41,8 @@ import {
   quitApp,
   readDroppedFiles,
   readPath,
+  saveFileAs,
+  WORD,
   setWindowTitle,
   writeHandle,
   writeIntoDirectory,
@@ -47,6 +54,7 @@ import { getPwaState, promptInstall, reloadForUpdate, subscribePwa } from './pwa
 import { stepZoom, type DocTab, type DocView } from './lib/view';
 
 let nextId = 1;
+const RESTRICTED = 'The author restricted changes to this document. Use Password protection to unlock it with the permissions password.';
 const mod = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl+';
 
 const DEFAULT_STYLES: Styles = {
@@ -119,6 +127,11 @@ export default function App() {
   const [formsOpen, setFormsOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [signNonce, setSignNonce] = useState(0);
+  const [protectFor, setProtectFor] = useState<{ tabId: string; note?: string } | null>(null);
+  const [exportFor, setExportFor] = useState<string | null>(null);
+  const [exportBusy, setExportBusy] = useState<string | null>(null);
+  const [imagesDialog, setImagesDialog] = useState<File[] | null>(null);
+  const [imagesBusy, setImagesBusy] = useState(false);
   const [compressOpen, setCompressOpen] = useState(false);
   const organizeApi = useRef<OrganizeApi | null>(null);
 
@@ -155,6 +168,9 @@ export default function App() {
       unsaved?: boolean;
       /** Digitally signed: kept exactly as it is, and its signatures get checked. */
       signed?: boolean;
+      /** Decrypted from a password-protected file. */
+      security?: Security | null;
+      protection?: { original: Uint8Array; owner: boolean } | null;
     }) => {
       // PDF.js takes ownership of the bytes it is given, so give it a copy.
       const doc = await loadPdf(
@@ -173,15 +189,18 @@ export default function App() {
         sizes,
         outline,
         view: { zoom: 'page-width', scale: 1, rotation: 0, page: 0 },
-        annots: initialDocState(opts.base, opts.items, opts.unsaved, opts.fields, opts.defs),
+        annots: initialDocState(opts.base, opts.items, opts.unsaved, opts.fields, opts.defs, opts.security ?? null),
         docBase: opts.base,
         readOnly: opts.encrypted
-          ? 'Encrypted PDFs can be read but not changed or saved yet.'
+          ? 'This encrypted PDF can be read, but changing it needs the editing engine, which couldn’t load. Try again when online.'
           : opts.signed
             ? 'This document is digitally signed. Changing it would break the signature, so it can only take more digital signatures.'
-            : null,
+            : opts.protection && !opts.protection.owner && opts.security && !opts.security.permissions.modify
+              ? RESTRICTED
+              : null,
         signed: !!opts.signed,
         signatures: null,
+        protection: opts.protection ?? null,
       };
       setTabs((ts) => [...ts, tab]);
       setActiveId(tab.id);
@@ -294,12 +313,51 @@ export default function App() {
       setLoading((n) => n + 1);
       try {
         // PDF Studio's own annotations come out of the file so they stay editable.
-        const encrypted = isEncrypted(file.data);
+        let encrypted = isEncrypted(file.data);
         let base = file.data;
         let items: Annotation[] = [];
         let defs: FieldDef[] = [];
         let fields: FieldValues = {};
-        const signed = !encrypted && hasSignatures(file.data);
+        let security: Security | null = null;
+        let protection: { original: Uint8Array; owner: boolean } | null = null;
+        const signed = hasSignatures(file.data);
+        // Password-protected (and not signed): decrypt so every feature works; protection is re-applied on save.
+        if (encrypted && !signed) {
+          let sec: typeof import('./lib/pdfSecurity') | null = null;
+          try {
+            sec = await import('./lib/pdfSecurity');
+          } catch {
+            sec = null; // engine unavailable: fall back to viewing only
+          }
+          if (sec) {
+            let password = '';
+            let tries = 0;
+            for (;;) {
+              try {
+                const d = await sec.decryptPdf(file.data, password);
+                base = d.bytes;
+                security = d.security;
+                protection = { original: file.data, owner: d.owner };
+                encrypted = false;
+                break;
+              } catch (err) {
+                if (!(err instanceof sec.PasswordNeeded)) {
+                  // The engine couldn't load or read it: view-only.
+                  break;
+                }
+                const next = await new Promise<string | null>((resolve) =>
+                  setPassword({ fileName: file.name, reason: tries++ ? 'incorrect' : 'need', resolve }),
+                );
+                if (next === null) {
+                  base = new Uint8Array();
+                  break;
+                }
+                password = next;
+              }
+            }
+            if (!base.length) continue; // password prompt cancelled
+          }
+        }
         // Signed files must stay byte-for-byte as they are, so nothing is taken out of them.
         if (!encrypted && !signed && hasStudioMarker(file.data)) {
           try {
@@ -308,7 +366,7 @@ export default function App() {
             /* unreadable by pdf-lib: show the file as it is */
           }
         }
-        await addTab({ name: file.name, path: file.path, handle: file.handle, base, items, defs, fields, encrypted, signed });
+        await addTab({ name: file.name, path: file.path, handle: file.handle, base, items, defs, fields, encrypted, signed, security, protection });
       } catch (err) {
         setToast(`Couldn't open “${file.name}”. ${errorText(err)}`);
       } finally {
@@ -405,7 +463,12 @@ export default function App() {
       setToast(tab.readOnly);
       return false;
     }
-    const { items, base, defs, fields } = tab.annots;
+    const { items, base, defs, fields, security } = tab.annots;
+    if (security && security.openPassword === null) {
+      // Opened with the permissions password, so the open password isn't known: ask rather than change it silently.
+      setProtectFor({ tabId: id, note: 'This document needs a password to open. Enter it again (or choose new protection) before saving.' });
+      return false;
+    }
     try {
       let path = tab.path;
       let handle = tab.handle;
@@ -424,7 +487,8 @@ export default function App() {
       }
       setLoading((n) => n + 1);
       try {
-        const bytes = await (await pdfWrite()).buildPdf(base, items, defs, fields);
+        let bytes = await (await pdfWrite()).buildPdf(base, items, defs, fields);
+        if (security) bytes = await (await import('./lib/pdfSecurity')).encryptPdf(bytes, security);
         if (isTauri && path) await writePath(path, bytes);
         else if (handle) await writeHandle(handle, bytes);
         else downloadFile(bytes, name);
@@ -432,7 +496,7 @@ export default function App() {
         setLoading((n) => n - 1);
       }
       setTabs((ts) =>
-        ts.map((t) => (t.id === id ? { ...t, path, handle, name, annots: { ...t.annots, saved: { base, items, defs, fields } } } : t)),
+        ts.map((t) => (t.id === id ? { ...t, path, handle, name, annots: { ...t.annots, saved: { base, items, defs, fields, security } } } : t)),
       );
       setToast(`Saved “${name}”.`);
       return true;
@@ -574,6 +638,12 @@ export default function App() {
         setAnnotateOpen(false);
         setFormsOpen(false);
         return tab && !tab.readOnly && setEditOpen((v) => !v);
+      case 'export':
+        return tab && setExportFor(tab.id);
+      case 'images_to_pdf':
+        return setImagesDialog([]);
+      case 'protect':
+        return tab && !tab.signed && setProtectFor({ tabId: tab.id });
       case 'sign':
         return tab && !tab.readOnly && setSignNonce((n) => n + 1);
       case 'forms':
@@ -664,7 +734,12 @@ export default function App() {
     if (isTauri) {
       const p = onNativeDrop((state, paths) => {
         setDragging(state === 'over');
-        if (state === 'drop') void openPaths(paths);
+        if (state === 'drop') {
+          void openPaths(paths.filter(isPdfName));
+          const pictures = paths.filter(isImageName);
+          if (pictures.length)
+            void Promise.all(pictures.map(readPath)).then((fs) => setImagesDialog(fs.map((f) => new File([f.data as BlobPart], f.name))));
+        }
       });
       return () => void p.then((f) => f());
     }
@@ -686,9 +761,12 @@ export default function App() {
       depth = 0;
       setDragging(false);
       if (!e.dataTransfer) return;
+      // Pictures dropped together become a new PDF.
+      const pictures = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith('image/') || isImageName(f.name));
       void readDroppedFiles(e.dataTransfer).then((files) => {
         if (files.length) void openFiles(files);
-        else setToast('Only PDF files can be opened.');
+        if (pictures.length) setImagesDialog(pictures);
+        if (!files.length && !pictures.length) setToast('Only PDFs and pictures can be opened.');
       });
     };
     window.addEventListener('dragenter', enter);
@@ -735,7 +813,7 @@ export default function App() {
             onAuxClick={(e) => e.button === 1 && requestCloseTab(t.id)}
             title={t.path ?? t.name}
           >
-            <FileText size={14} className="tab-icon" />
+            {t.annots.security ? <Lock size={13} className="tab-icon" /> : <FileText size={14} className="tab-icon" />}
             <span className="tab-name">{t.name}</span>
             <button
               className={`tab-close${isDirty(t.annots) ? ' dirty' : ''}`}
@@ -827,6 +905,8 @@ export default function App() {
           }}
           onSaveParts={saveParts}
           onDigitalSign={(plan, placement) => void signTab(active.id, plan, placement)}
+          onProtect={() => setProtectFor({ tabId: active.id })}
+          onExport={() => setExportFor(active.id)}
           onError={setToast}
           onToggleSidebar={() => setSidebarOpen((v) => !v)}
           onSidebarPanel={setSidebarPanel}
@@ -847,6 +927,9 @@ export default function App() {
               </button>
               <button className="secondary" onClick={() => void combineFiles()}>
                 <Combine size={16} /> Combine files…
+              </button>
+              <button className="secondary" onClick={() => setImagesDialog([])}>
+                <Images size={16} /> PDF from pictures…
               </button>
             </div>
             <p className="hint">
@@ -873,6 +956,105 @@ export default function App() {
       )}
 
       {confirm && <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />}
+
+      {exportFor && (() => {
+        const tab = tabs.find((t) => t.id === exportFor);
+        if (!tab) return null;
+        const stem = tab.name.replace(/\.pdf$/i, '');
+        // What you'd save: annotations, form values and placed fields included.
+        const finished = async () => {
+          const { items, base, defs, fields } = tab.annots;
+          return (await pdfWrite()).buildPdf(base, items, defs, fields);
+        };
+        const run = async (choice: ExportChoice) => {
+          try {
+            if (choice.kind === 'word') {
+              const name = await saveFileAs(`${stem}.docx`, WORD, async () => {
+                setExportBusy('Building the Word document…');
+                const { pdfToDocx } = await import('./lib/docx');
+                return pdfToDocx(await finished(), (d, t) => setExportBusy(`Reading page ${Math.min(d + 1, t)} of ${t}…`));
+              });
+              if (name) setToast(`Saved “${name}”.`);
+            } else {
+              const { pagesToImages, parsePageRange } = await import('./lib/images');
+              const n = tab.sizes.length;
+              const pages = choice.pages === 'all' ? Array.from({ length: n }, (_, i) => i) : choice.pages === 'current' ? [tab.view.page] : parsePageRange(choice.pages, n);
+              if (!pages.length) return setToast('Choose which pages to export, like 1-3, 5.');
+              await saveParts(async () =>
+                pagesToImages(await finished(), pages, { format: choice.format, dpi: choice.dpi, stem }, (d, t) => setExportBusy(`Making picture ${Math.min(d + 1, t)} of ${t}…`)),
+              );
+            }
+            setExportFor(null);
+          } catch (err) {
+            setToast(`Couldn't export. ${errorText(err)}`);
+          } finally {
+            setExportBusy(null);
+          }
+        };
+        return (
+          <ExportDialog pageCount={tab.sizes.length} currentPage={tab.view.page} busy={exportBusy} onExport={(c) => void run(c)} onClose={() => setExportFor(null)} />
+        );
+      })()}
+
+      {imagesDialog && (
+        <ImagesToPdfDialog
+          initial={imagesDialog}
+          busy={imagesBusy}
+          onClose={() => setImagesDialog(null)}
+          onCreate={(files, layout) => {
+            setImagesBusy(true);
+            void import('./lib/images')
+              .then(({ imagesToPdf }) => imagesToPdf(files, layout))
+              .then(async (bytes) => {
+                setImagesDialog(null);
+                const name = files.length === 1 ? files[0].name.replace(/\.[^.]+$/, '') + '.pdf' : 'Pictures.pdf';
+                await openGenerated(name, bytes, []);
+              })
+              .catch((err) => setToast(`Couldn't make the PDF. ${errorText(err)}`))
+              .finally(() => setImagesBusy(false));
+          }}
+        />
+      )}
+
+      {protectFor && (() => {
+        const tab = tabs.find((t) => t.id === protectFor.tabId);
+        if (!tab) return null;
+        const locked = tab.readOnly === RESTRICTED;
+        return (
+          <ProtectDialog
+            security={tab.annots.security}
+            locked={locked}
+            note={protectFor.note}
+            onClose={() => setProtectFor(null)}
+            onUnlock={async (pw) => {
+              const sec = await import('./lib/pdfSecurity');
+              if (!tab.protection || !(await sec.checkOwnerPassword(tab.protection.original, pw))) return false;
+              // Unlocking isn't a change to the document, so it doesn't count as unsaved.
+              setTabs((ts) =>
+                ts.map((t) => {
+                  if (t.id !== tab.id) return t;
+                  const security = t.annots.security ? { ...t.annots.security, ownerPassword: pw } : null;
+                  const same = t.annots.saved.security === t.annots.security;
+                  return {
+                    ...t,
+                    readOnly: t.readOnly === RESTRICTED ? null : t.readOnly,
+                    protection: t.protection ? { ...t.protection, owner: true } : null,
+                    annots: { ...t.annots, security, saved: same ? { ...t.annots.saved, security } : t.annots.saved },
+                  };
+                }),
+              );
+              setProtectFor(null);
+              setToast('Unlocked. You can change this document now.');
+              return true;
+            }}
+            onApply={(security) => {
+              updateAnnots(tab.id, (s) => commitSecurity(s, security));
+              setProtectFor(null);
+              setToast(security ? 'Protection set. It’s applied when you save.' : 'Protection removed. Save to keep the change.');
+            }}
+          />
+        );
+      })()}
 
       {compressOpen && active && (
         <Suspense fallback={null}>

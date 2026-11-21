@@ -32,3 +32,6 @@ src-tauri/gen/schemas
 
 # Local tool settings
 .claude/
+
+# OCR engine copied at build time
+public/tesseract

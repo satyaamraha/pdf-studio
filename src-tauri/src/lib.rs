@@ -9,19 +9,28 @@ use tauri::{AppHandle, Emitter, Manager, Runtime};
 #[derive(Default)]
 struct PendingFiles(Mutex<Vec<String>>);
 
-fn is_pdf(path: &Path) -> bool {
+fn has_extension(path: &Path, allowed: &[&str]) -> bool {
   path
     .extension()
     .and_then(|e| e.to_str())
-    .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
+    .is_some_and(|e| allowed.iter().any(|a| e.eq_ignore_ascii_case(a)))
 }
 
-/// Reads a PDF from disk and returns its raw bytes (sent as binary, not JSON).
+fn is_pdf(path: &Path) -> bool {
+  has_extension(path, &["pdf"])
+}
+
+/// Files the app may open: PDFs, and pictures to turn into PDFs.
+const READABLE: &[&str] = &["pdf", "png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff", "heic", "heif", "avif"];
+/// Files the app may write: PDFs, and exports (pictures, Word).
+const WRITABLE: &[&str] = &["pdf", "png", "jpg", "jpeg", "docx"];
+
+/// Reads a PDF (or a picture) from disk and returns its raw bytes (sent as binary, not JSON).
 #[tauri::command]
 fn read_pdf(path: String) -> Result<tauri::ipc::Response, String> {
   let path = Path::new(&path);
-  if !is_pdf(path) {
-    return Err("Only .pdf files can be opened.".into());
+  if !has_extension(path, READABLE) {
+    return Err("Only PDFs and pictures can be opened.".into());
   }
   std::fs::read(path)
     .map(tauri::ipc::Response::new)
@@ -59,8 +68,8 @@ fn write_pdf(request: tauri::ipc::Request) -> Result<(), String> {
     .and_then(|v| v.to_str().ok())
     .ok_or("Missing destination path.")?;
   let path = PathBuf::from(percent_decode(header)?);
-  if !is_pdf(&path) {
-    return Err("Only .pdf files can be saved.".into());
+  if !has_extension(&path, WRITABLE) {
+    return Err("Only PDF, picture and Word files can be saved.".into());
   }
   let file_name = path.file_name().ok_or("Invalid file name.")?.to_string_lossy();
   let tmp = path.with_file_name(format!(".{file_name}.pdfstudio-tmp"));
@@ -109,6 +118,9 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
       &PredefinedMenuItem::separator(app)?,
       &item("combine", "Combine Files…", "CmdOrCtrl+Alt+C")?,
       &item("compress", "Reduce File Size…", "CmdOrCtrl+Alt+R")?,
+      &item("protect", "Password Protection…", "CmdOrCtrl+Alt+P")?,
+      &item("export", "Export as Pictures or Word…", "CmdOrCtrl+Alt+E")?,
+      &item("images_to_pdf", "New PDF from Pictures…", "CmdOrCtrl+Alt+N")?,
       &PredefinedMenuItem::separator(app)?,
       &item("close_tab", "Close Tab", "CmdOrCtrl+W")?,
     ],
@@ -126,6 +138,9 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
       &PredefinedMenuItem::separator(app)?,
       &item("combine", "Combine Files…", "CmdOrCtrl+Alt+C")?,
       &item("compress", "Reduce File Size…", "CmdOrCtrl+Alt+R")?,
+      &item("protect", "Password Protection…", "CmdOrCtrl+Alt+P")?,
+      &item("export", "Export as Pictures or Word…", "CmdOrCtrl+Alt+E")?,
+      &item("images_to_pdf", "New PDF from Pictures…", "CmdOrCtrl+Alt+N")?,
       &PredefinedMenuItem::separator(app)?,
       &item("close_tab", "Close Tab", "CmdOrCtrl+W")?,
       &PredefinedMenuItem::separator(app)?,

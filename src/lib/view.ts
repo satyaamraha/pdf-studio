@@ -36,6 +36,8 @@ export interface DocTab {
   signed: boolean;
   /** Results of checking those signatures (null while checking). */
   signatures: SignatureInfo[] | null;
+  /** The file was encrypted: its original bytes (to check an owner password later) and whether owner rights are unlocked. */
+  protection: { original: Uint8Array; owner: boolean } | null;
 }
 
 export const MIN_SCALE = 0.1;
