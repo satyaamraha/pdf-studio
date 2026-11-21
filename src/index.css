@@ -2101,9 +2101,19 @@ button.primary.danger-fill {
   cursor: text;
   border-radius: 2px;
 }
-.edit-run:hover {
+.edit-run {
+  touch-action: none;
+}
+.edit-run:hover,
+.edit-run.source {
   outline: 1.5px solid var(--accent);
   background: rgb(51 85 224 / 0.08);
+}
+.edit-run.dragging {
+  outline: 1.5px dashed var(--accent);
+  background: rgb(51 85 224 / 0.12);
+  cursor: grabbing;
+  pointer-events: none;
 }
 .edit-input {
   position: absolute;

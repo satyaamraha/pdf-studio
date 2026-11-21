@@ -93,6 +93,7 @@ Limits for now: only RSA digital IDs can sign and be checked (most personal IDs 
 
 - Edit text in place: click a line, change it; the original font is kept when it has every character you type, otherwise the closest standard font (Helvetica, Times, Courier) is used. Position, size and colour are kept, and so is reading order
 - Edit text on scans too (pages with a recognised-text layer, from Adobe Scan, a scanner or OCR here): the word in the picture is painted over in the paper's colour and the new text drawn in the ink's colour, at the scan's size, with the weight and serif/sans style detected (and adjustable while typing). The hidden text is updated so search finds the new words. The old pixels stay under the cover; use redaction to remove them from the file
+- Move text: drag a line in Edit → Text (Shift keeps it in line). Lines keep their exact font and spacing; on scans the word's pixels move and its old spot is covered in the paper's colour
 - Pictures: move, resize (keeps its shape) and delete; add new pictures
 - True redaction: mark areas (drag) or text (select it), then apply. Text is removed character by character (partly covered lines are rebuilt from what's left), covered parts of pictures are blacked out in the image data itself, drawings and comments in the area are removed, form fields there are deleted with their values, PDF Studio's own annotations there go too, and the old page content is dropped from the file. Optionally removes document info (title, author…)
 - Every edit is one undo step, shared with everything else

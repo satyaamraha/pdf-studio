@@ -47,7 +47,7 @@ export function EditBar(p: Props) {
         </button>
       )}
       {p.tool === 'add-image' && p.hasPicture && <span className="bar-note">Click or drag on the page to place it.</span>}
-      {p.tool === 'text' && <span className="bar-note">Click a line of text to change it. Enter saves, Esc cancels.</span>}
+      {p.tool === 'text' && <span className="bar-note">Click a line to change it (Enter saves, Esc cancels), or drag it to move it (Shift keeps it in line).</span>}
       {p.tool === 'image' && <span className="bar-note">Select a picture to move or resize it; Delete removes it.</span>}
 
       {(redacting || p.marks > 0) && (

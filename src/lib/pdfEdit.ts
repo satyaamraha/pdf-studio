@@ -564,6 +564,90 @@ async function rewriteScannedText(bytes: Uint8Array, pageIndex: number, region: 
   return cleanUp(out!);
 }
 
+export interface ScanMove {
+  cover: Box;
+  patch: { rgba: Uint8ClampedArray; width: number; height: number };
+  word: { rgba: Uint8ClampedArray; width: number; height: number };
+}
+
+/**
+ * Moves the text in `region` by (dx, dy), keeping its font, size, colour and spacing, and
+ * its place in reading order. With `scan`, the text is part of a scanned picture: the word's
+ * pixels move too, and the paper's colour covers the spot it left.
+ */
+export async function moveText(bytes: Uint8Array, pageIndex: number, region: Box, dx: number, dy: number, scan?: ScanMove): Promise<Uint8Array> {
+  const { bytes: out } = await withDoc(
+    bytes,
+    (c) => {
+      const page = c.m.FPDF_LoadPage(c.doc, pageIndex);
+      if (!page) throw new Error('Page not found.');
+      try {
+        const objects = walk(c, page);
+        const chars = readChars(c, page);
+        const inRegion = (ch: CharInfo) => containsPoint(region, (ch.box.x1 + ch.box.x2) / 2, (ch.box.y1 + ch.box.y2) / 2);
+        const first = chars.find(inRegion);
+        if (!first && !scan) throw new Error('No text found there.');
+        const firstObj = first && objects.find((o) => o.obj === first.obj);
+        const anchorIndex = firstObj && !firstObj.parent ? pageIndexOf(c, page, firstObj.obj) : -1;
+        // Text objects entirely inside the region just shift, untouched (spacing, kerning and
+        // all), so the line stays one piece; only partly covered ones are rebuilt.
+        const perObj = new Map<number, CharInfo[]>();
+        for (const ch of chars) {
+          const list = perObj.get(ch.obj);
+          if (list) list.push(ch);
+          else perObj.set(ch.obj, [ch]);
+        }
+        const whole = new Set<number>();
+        for (const o of objects) {
+          const list = perObj.get(o.obj);
+          if (!o.parent && list?.every(inRegion)) {
+            c.m.FPDFPageObj_Transform(o.obj, 1, 0, 0, 1, dx, dy);
+            whole.add(o.obj);
+          }
+        }
+        const removed = removeChars(c, page, objects, chars, (ch) => inRegion(ch) && !whole.has(ch.obj));
+        // Everything goes back where the text was in drawing order, one after another.
+        let at = anchorIndex >= 0 && anchorIndex <= c.m.FPDFPage_CountObjects(page) ? anchorIndex : -1;
+        const insert = (obj: number) => {
+          if (at < 0 || !c.m.FPDFPage_InsertObjectAtIndex(page, obj, at)) c.m.FPDFPage_InsertObject(page, obj);
+          else at++;
+        };
+        if (scan) {
+          const { cover, patch, word } = scan;
+          insert(newImage(c, cover, patch.rgba, patch.width, patch.height));
+          insert(newImage(c, { x1: cover.x1 + dx, y1: cover.y1 + dy, x2: cover.x2 + dx, y2: cover.y2 + dy }, word.rgba, word.width, word.height));
+        }
+        for (const { style, chars: gone } of removed) {
+          // Word by word at their own (moved) positions, so spacing stays exactly as it was.
+          let run: CharInfo[] = [];
+          const flush = () => {
+            if (!run.length) return;
+            const t = c.m.FPDFPageObj_CreateTextObj(c.doc, style.font, style.size);
+            if (t && c.m.FPDFText_SetText(t, c.mem.wide(String.fromCodePoint(...run.map((ch) => ch.unicode))))) {
+              const [a, b, cc, d] = style.matrix;
+              setMatrix(c, t, [a, b, cc, d, run[0].origin[0] + dx, run[0].origin[1] + dy]);
+              c.m.FPDFPageObj_SetFillColor(t, ...style.fill);
+              if (style.renderMode >= 0) c.m.FPDFTextObj_SetTextRenderMode(t, style.renderMode);
+              insert(t);
+            } else if (t) c.m.FPDFPageObj_Destroy(t);
+            run = [];
+          };
+          for (const ch of gone) {
+            if (ch.unicode === 32 || ch.unicode === 0xa0) flush();
+            else run.push(ch);
+          }
+          flush();
+        }
+        if (!c.m.FPDFPage_GenerateContent(page)) throw new Error("Couldn't rewrite the page.");
+      } finally {
+        c.m.FPDF_ClosePage(page);
+      }
+    },
+    true,
+  );
+  return cleanUp(out!);
+}
+
 // ----- Images -----
 
 export interface PageImage {

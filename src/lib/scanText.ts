@@ -15,6 +15,8 @@ export interface ScanLook {
   cover: Box;
   /** The paper's colour over `cover`, fading out at the edges so no seam shows. */
   patch: { rgba: Uint8ClampedArray; width: number; height: number };
+  /** The pixels of the word over `cover`, with the paper made transparent (for moving it). */
+  word: { rgba: Uint8ClampedArray; width: number; height: number };
   background: Rgb;
   ink: Rgb;
   /** Font size in points. */
@@ -72,7 +74,7 @@ export async function inspectScannedText(doc: PDFDocumentProxy, pageIndex: numbe
   const hist = new Uint32Array(64);
   for (const l of lum) hist[Math.min(63, l >> 2)]++;
   const bgL = (hist.indexOf(Math.max(...hist)) << 2) + 2;
-  const background = meanColour(px, lum, (l) => Math.abs(l - bgL) <= 10);
+  const background = commonColour(px, lum, (l) => Math.abs(l - bgL) <= 10);
   let maxDiff = 0;
   for (const l of lum) maxDiff = Math.max(maxDiff, Math.abs(l - bgL));
   if (maxDiff < 48) return null; // nothing visible here
@@ -163,12 +165,12 @@ export async function inspectScannedText(doc: PDFDocumentProxy, pageIndex: numbe
     for (let i = from, n = 0; i >= 0 && i < limit; i += step, n++) if (has(i)) return n;
     return Infinity;
   };
-  const reach = 0.25 * em;
+  const reach = 0.4 * em;
   const ext = {
     l: Math.min(reach, 0.5 * gapTo(L - 1, -1, W, (x) => colHas(x, T, B)), L),
     r: Math.min(reach, 0.5 * gapTo(R + 1, 1, W, (x) => colHas(x, T, B)), W - 1 - R),
-    t: Math.min(reach, 0.5 * gapTo(T - 1, -1, H, (y) => rowHas(y, L, R)), T),
-    b: Math.min(reach, 0.5 * gapTo(B + 1, 1, H, (y) => rowHas(y, L, R)), H - 1 - B),
+    t: Math.min(reach * 0.75, 0.5 * gapTo(T - 1, -1, H, (y) => rowHas(y, L, R)), T),
+    b: Math.min(reach * 0.75, 0.5 * gapTo(B + 1, 1, H, (y) => rowHas(y, L, R)), H - 1 - B),
   };
   const ox1 = L - ext.l;
   const oy1 = T - ext.t;
@@ -188,12 +190,31 @@ export async function inspectScannedText(doc: PDFDocumentProxy, pageIndex: numbe
       const i = (y * pw + x) * 4;
       [rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]] = [background[0], background[1], background[2], Math.round(255 * a)];
     }
+  // The word itself, lifted off the paper: ink keeps its colour, paper becomes transparent,
+  // so a moved word sits cleanly on whatever is underneath.
+  const inkL = 0.299 * ink[0] + 0.587 * ink[1] + 0.114 * ink[2];
+  const k2 = Math.min(1, 1024 / Math.max(ow, oh));
+  const ww = Math.max(2, Math.round(ow * k2));
+  const wh = Math.max(2, Math.round(oh * k2));
+  const word = new Uint8ClampedArray(ww * wh * 4);
+  for (let y = 0; y < wh; y++)
+    for (let x = 0; x < ww; x++) {
+      const sx = Math.min(W - 1, Math.max(0, Math.floor(ox1 + (x + 0.5) / k2)));
+      const sy = Math.min(H - 1, Math.max(0, Math.floor(oy1 + (y + 0.5) / k2)));
+      const j = sy * W + sx;
+      let a = (lum[j] - bgL) / (inkL - bgL || 1);
+      a = a < 0.08 ? 0 : Math.min(1, a);
+      const i = (y * ww + x) * 4;
+      for (let ch = 0; ch < 3; ch++) word[i + ch] = a ? (px[j * 4 + ch] - (1 - a) * background[ch]) / a : ink[ch];
+      word[i + 3] = Math.round(255 * a);
+    }
   const [x1, y1] = vp.convertToPdfPoint(ox1 + cx, oy1 + oh + cy);
   const [x2, y2] = vp.convertToPdfPoint(ox1 + ow + cx, oy1 + cy);
   const [ox, oy] = vp.convertToPdfPoint(L + cx, base + 1 + cy);
   return {
     cover: { x1: Math.min(x1, x2), y1: Math.min(y1, y2), x2: Math.max(x1, x2), y2: Math.max(y1, y2) },
     patch: { rgba, width: pw, height: ph },
+    word: { rgba: word, width: ww, height: wh },
     background,
     ink,
     size: em / S,
@@ -201,6 +222,13 @@ export async function inspectScannedText(doc: PDFDocumentProxy, pageIndex: numbe
     serif,
     origin: [ox, oy],
   };
+}
+
+/** The most common value of each channel: the paper itself, not pulled darker by noise near letters. */
+function commonColour(px: Uint8ClampedArray, lum: Float32Array, pick: (l: number) => boolean): Rgb {
+  const hist = [new Uint32Array(256), new Uint32Array(256), new Uint32Array(256)];
+  for (let i = 0; i < lum.length; i++) if (pick(lum[i])) for (let ch = 0; ch < 3; ch++) hist[ch][px[i * 4 + ch]]++;
+  return hist.map((h) => h.indexOf(Math.max(...h))) as Rgb;
 }
 
 function meanColour(px: Uint8ClampedArray, lum: Float32Array, pick: (l: number) => boolean): Rgb {

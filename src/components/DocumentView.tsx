@@ -742,6 +742,7 @@ export function DocumentView(props: Props) {
           if (!r.fontKept) props.onError('The original font doesn’t have all of those characters, so the closest standard font was used.');
           return { base: r.bytes };
         }),
+      moveText: (page, box, dx, dy, scan) => void runEdit('Moving text…', async (base, e) => ({ base: await e.moveText(base, page, box, dx, dy, scan) })),
       isHiddenText: (page, box) => import('../lib/pdfEdit').then((e) => e.isHiddenText(baseRef.current, page, box)),
       addMark: (mark) => setMarks((m) => [...m, mark]),
       removeMark: (i) => setMarks((m) => m.filter((_, k) => k !== i)),

@@ -3,13 +3,14 @@ import { X } from 'lucide-react';
 import { normalizeBox } from '../lib/annotations';
 import { apply, invert, transformBox, type Box, type Matrix, type Point } from '../lib/geometry';
 import { getText, type PDFDocumentProxy } from '../lib/pdf';
-import type { Mark, PageImage, ScanRewrite } from '../lib/pdfEdit';
+import type { Mark, PageImage, ScanMove, ScanRewrite } from '../lib/pdfEdit';
 import { inspectScannedText, scanFont, type ScanLook } from '../lib/scanText';
 
 export type EditTool = 'text' | 'image' | 'add-image' | 'redact-area' | 'redact-text';
 
 export interface EditApi {
   replaceText(page: number, box: Box, text: string, scan?: ScanRewrite): void;
+  moveText(page: number, box: Box, dx: number, dy: number, scan?: ScanMove): void;
   /** Whether the text there is hidden, like the recognised text over a scan. */
   isHiddenText(page: number, box: Box): Promise<boolean>;
   addMark(mark: Mark): void;
@@ -56,6 +57,8 @@ function EditLayerImpl(p: Props) {
   };
   const [draft, setDraft] = useState<Box | null>(null);
   const [moving, setMoving] = useState<{ index: number; box: Box } | null>(null);
+  // A line of text being dragged, and how far (page units).
+  const [dragging, setDragging] = useState<{ run: TextRun; d: Point } | null>(null);
   const scale = Math.hypot(p.matrix[0], p.matrix[1]);
   const inv = useMemo(() => invert(p.matrix), [p.matrix]);
   const { tool, page, api } = p;
@@ -87,7 +90,14 @@ function EditLayerImpl(p: Props) {
     if (tool === 'image' && !known) api.requestImages(page);
   }, [tool, page, api, known]);
 
-  useEffect(() => setEditing(null), [tool, p.doc]);
+  useEffect(() => {
+    setEditing(null);
+    setDragging(null);
+  }, [tool, p.doc]);
+  // The moved line shows where it's going until the page is redrawn (or the move fails).
+  useEffect(() => {
+    if (!p.busy) setDragging(null);
+  }, [p.busy]);
 
   const toPdf = (e: { clientX: number; clientY: number }): Point => {
     const r = rootRef.current!.getBoundingClientRect();
@@ -208,6 +218,44 @@ function EditLayerImpl(p: Props) {
     );
   };
 
+  // Dragging a line moves it; a click without moving edits it. Shift keeps it in line.
+  const startRunDrag = (e: RPointerEvent, run: TextRun) => {
+    if (e.button !== 0 || p.busy) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const start = toPdf(e);
+    let d: Point | null = null;
+    const move = (ev: PointerEvent) => {
+      const [x, y] = toPdf(ev);
+      let [dx, dy] = [x - start[0], y - start[1]];
+      if (!d && Math.hypot(dx, dy) * scale < 4) return;
+      if (ev.shiftKey) {
+        if (Math.abs(dx) > Math.abs(dy)) dy = 0;
+        else dx = 0;
+      }
+      d = [dx, dy];
+      setDragging({ run, d });
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      if (!d) return startEdit(run);
+      const [dx, dy] = d;
+      const region = regionOf(run);
+      void api
+        .isHiddenText(page, region)
+        .then((hidden) => (hidden ? inspectScannedText(p.doc, page, run) : null))
+        .catch(() => null)
+        .then((look) => {
+          if (!look) return api.moveText(page, region, dx, dy);
+          const { cover, patch, word } = look;
+          api.moveText(page, union(region, cover), dx, dy, { cover, patch, word });
+        });
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
+
   const finishEdit = (commit: boolean) => {
     const ed = editRef.current;
     setEditing(null);
@@ -216,9 +264,7 @@ function EditLayerImpl(p: Props) {
       const region = regionOf(ed.run);
       if (!look) return api.replaceText(page, region, ed.value);
       const style = ed.scan ?? { serif: look.serif, bold: look.bold };
-      const { cover } = look;
-      const all = { x1: Math.min(region.x1, cover.x1), y1: Math.min(region.y1, cover.y1), x2: Math.max(region.x2, cover.x2), y2: Math.max(region.y2, cover.y2) };
-      api.replaceText(page, all, ed.value, {
+      api.replaceText(page, union(region, look.cover), ed.value, {
         cover: look.cover,
         patch: look.patch,
         ink: look.ink,
@@ -245,12 +291,18 @@ function EditLayerImpl(p: Props) {
         runs.map((r, i) => (
           <div
             key={i}
-            className="edit-run"
+            className={`edit-run${dragging?.run === r ? ' source' : ''}`}
             style={screen(r.box)}
-            title="Click to edit this text"
-            onClick={() => startEdit(r)}
+            title="Click to change this text, drag to move it"
+            onPointerDown={(e) => startRunDrag(e, r)}
           />
         ))}
+      {dragging && (
+        <div
+          className="edit-run dragging"
+          style={screen({ x1: dragging.run.box.x1 + dragging.d[0], y1: dragging.run.box.y1 + dragging.d[1], x2: dragging.run.box.x2 + dragging.d[0], y2: dragging.run.box.y2 + dragging.d[1] })}
+        />
+      )}
 
       {editing && (
         <EditInput
@@ -315,6 +367,8 @@ function EditLayerImpl(p: Props) {
     </div>
   );
 }
+
+const union = (a: Box, b: Box): Box => ({ x1: Math.min(a.x1, b.x1), y1: Math.min(a.y1, b.y1), x2: Math.max(a.x2, b.x2), y2: Math.max(a.y2, b.y2) });
 
 interface Editing {
   run: TextRun;
