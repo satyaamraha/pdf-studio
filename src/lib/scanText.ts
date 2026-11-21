@@ -11,8 +11,10 @@ import { pdfjs, type PDFDocumentProxy } from './pdf';
 export type Rgb = [number, number, number];
 
 export interface ScanLook {
-  /** The visible word (or words) in the picture, in page coordinates. */
+  /** The area to paint over (the visible word and the haze around it), in page coordinates. */
   cover: Box;
+  /** The paper's colour over `cover`, fading out at the edges so no seam shows. */
+  patch: { rgba: Uint8ClampedArray; width: number; height: number };
   background: Rgb;
   ink: Rgb;
   /** Font size in points. */
@@ -155,12 +157,43 @@ export async function inspectScannedText(doc: PDFDocumentProxy, pageIndex: numbe
   const middle = median(runsIn(Math.max(T, base - Math.round(0.3 * em))));
   const serif = middle > 0 && foot > middle * 1.5;
 
-  const pad = Math.max(1, S * 0.5);
-  const [x1, y1] = vp.convertToPdfPoint(L - pad + cx, B + pad + cy);
-  const [x2, y2] = vp.convertToPdfPoint(R + 1 + pad + cx, T - pad + cy);
+  // Scans carry faint haze (JPEG noise) around letters, so the cover reaches past the ink
+  // and fades out; it stops halfway to any neighbouring ink so other words stay untouched.
+  const gapTo = (from: number, step: number, limit: number, has: (i: number) => boolean) => {
+    for (let i = from, n = 0; i >= 0 && i < limit; i += step, n++) if (has(i)) return n;
+    return Infinity;
+  };
+  const reach = 0.25 * em;
+  const ext = {
+    l: Math.min(reach, 0.5 * gapTo(L - 1, -1, W, (x) => colHas(x, T, B)), L),
+    r: Math.min(reach, 0.5 * gapTo(R + 1, 1, W, (x) => colHas(x, T, B)), W - 1 - R),
+    t: Math.min(reach, 0.5 * gapTo(T - 1, -1, H, (y) => rowHas(y, L, R)), T),
+    b: Math.min(reach, 0.5 * gapTo(B + 1, 1, H, (y) => rowHas(y, L, R)), H - 1 - B),
+  };
+  const ox1 = L - ext.l;
+  const oy1 = T - ext.t;
+  const ow = R + 1 + ext.r - ox1;
+  const oh = B + 1 + ext.b - oy1;
+  const k = Math.min(1, 256 / Math.max(ow, oh));
+  const pw = Math.max(2, Math.round(ow * k));
+  const ph = Math.max(2, Math.round(oh * k));
+  const rgba = new Uint8ClampedArray(pw * ph * 4);
+  // Solid over the ink and the first part of the haze, then a fade to nothing.
+  const fade = (d: number, e: number) => (e <= 0 ? 1 : Math.min(1, d / (e * 0.6)));
+  for (let y = 0; y < ph; y++)
+    for (let x = 0; x < pw; x++) {
+      const X = (x + 0.5) / k;
+      const Y = (y + 0.5) / k;
+      const a = Math.min(fade(X, ext.l), fade(ow - X, ext.r), fade(Y, ext.t), fade(oh - Y, ext.b));
+      const i = (y * pw + x) * 4;
+      [rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]] = [background[0], background[1], background[2], Math.round(255 * a)];
+    }
+  const [x1, y1] = vp.convertToPdfPoint(ox1 + cx, oy1 + oh + cy);
+  const [x2, y2] = vp.convertToPdfPoint(ox1 + ow + cx, oy1 + cy);
   const [ox, oy] = vp.convertToPdfPoint(L + cx, base + 1 + cy);
   return {
     cover: { x1: Math.min(x1, x2), y1: Math.min(y1, y2), x2: Math.max(x1, x2), y2: Math.max(y1, y2) },
+    patch: { rgba, width: pw, height: ph },
     background,
     ink,
     size: em / S,

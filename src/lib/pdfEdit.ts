@@ -440,7 +440,8 @@ function fontName(c: Ctx, font: number): string {
 export interface ScanRewrite {
   /** Area of the picture to paint over, in the page's coordinates. */
   cover: Box;
-  background: [number, number, number];
+  /** What to paint there: the paper's colour, fading out at the edges so no seam shows. */
+  patch: { rgba: Uint8ClampedArray; width: number; height: number };
   ink: [number, number, number];
   /** Standard font name, e.g. 'Times-Bold'. */
   font: string;
@@ -519,7 +520,7 @@ export async function replaceText(bytes: Uint8Array, pageIndex: number, region: 
 
 /**
  * Text on a scan is pixels. The hidden recognised text in `region` is replaced (so search
- * finds the new words), the old word is painted over in the paper's colour, and the new
+ * finds the new words), the old word is painted over in the paper's colour (fading out at the edges), and the new
  * text is drawn on top in the ink's colour. The old pixels stay underneath the cover;
  * redaction is the way to remove them from the file.
  */
@@ -542,11 +543,8 @@ async function rewriteScannedText(bytes: Uint8Array, pageIndex: number, region: 
           const i = at();
           if (i < 0 || !c.m.FPDFPage_InsertObjectAtIndex(page, obj, i)) c.m.FPDFPage_InsertObject(page, obj);
         };
-        const { cover, background: bg, ink } = scan;
-        const rect = c.m.FPDFPageObj_CreateNewRect(cover.x1, cover.y1, cover.x2 - cover.x1, cover.y2 - cover.y1);
-        c.m.FPDFPageObj_SetFillColor(rect, bg[0], bg[1], bg[2], 255);
-        c.m.FPDFPath_SetDrawMode(rect, 1, false);
-        insert(rect);
+        const { cover, patch, ink } = scan;
+        insert(newImage(c, cover, patch.rgba, patch.width, patch.height));
         if (text.trim()) {
           const t = c.m.FPDFPageObj_CreateTextObj(c.doc, c.m.FPDFText_LoadStandardFont(c.doc, scan.font), scan.size);
           if (!t || !c.m.FPDFText_SetText(t, c.mem.wide(text))) throw new Error("Couldn't add the new text.");
@@ -630,6 +628,36 @@ export async function editImage(bytes: Uint8Array, pageIndex: number, index: num
 }
 
 /** Adds a picture (RGBA pixels) to a page at `box`. */
+/** A new image object showing `rgba` (with transparency if it has any) stretched over `box`. Not yet on a page. */
+function newImage(c: Ctx, box: Box, rgba: Uint8ClampedArray, width: number, height: number): number {
+  const opaque = rgba.every((v, i) => i % 4 !== 3 || v === 255);
+  const bmp = c.m.FPDFBitmap_Create(width, height, opaque ? 0 : 1);
+  try {
+    const buf = c.m.FPDFBitmap_GetBuffer(bmp);
+    const stride = c.m.FPDFBitmap_GetStride(bmp);
+    // PDFium bitmaps are BGRA.
+    const row = new Uint8Array(stride);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const s = (y * width + x) * 4;
+        row[x * 4] = rgba[s + 2];
+        row[x * 4 + 1] = rgba[s + 1];
+        row[x * 4 + 2] = rgba[s];
+        row[x * 4 + 3] = rgba[s + 3];
+      }
+      const heap = (c.m.pdfium as unknown as { HEAPU8?: Uint8Array }).HEAPU8;
+      if (heap) heap.set(row, buf + y * stride);
+      else row.forEach((v, i) => c.m.pdfium.setValue(buf + y * stride + i, v, 'i8'));
+    }
+    const img = c.m.FPDFPageObj_NewImageObj(c.doc);
+    c.m.FPDFImageObj_SetBitmap(0, 0, img, bmp);
+    setMatrix(c, img, [box.x2 - box.x1, 0, 0, box.y2 - box.y1, box.x1, box.y1]);
+    return img;
+  } finally {
+    c.m.FPDFBitmap_Destroy(bmp);
+  }
+}
+
 export async function addImage(bytes: Uint8Array, pageIndex: number, box: Box, rgba: Uint8ClampedArray, width: number, height: number): Promise<Uint8Array> {
   const { bytes: out } = await withDoc(
     bytes,
@@ -637,32 +665,7 @@ export async function addImage(bytes: Uint8Array, pageIndex: number, box: Box, r
       const page = c.m.FPDF_LoadPage(c.doc, pageIndex);
       if (!page) throw new Error('Page not found.');
       try {
-        const opaque = rgba.every((v, i) => i % 4 !== 3 || v === 255);
-        const bmp = c.m.FPDFBitmap_Create(width, height, opaque ? 0 : 1);
-        try {
-          const buf = c.m.FPDFBitmap_GetBuffer(bmp);
-          const stride = c.m.FPDFBitmap_GetStride(bmp);
-          // PDFium bitmaps are BGRA.
-          const row = new Uint8Array(stride);
-          for (let y = 0; y < height; y++) {
-            for (let x = 0; x < width; x++) {
-              const s = (y * width + x) * 4;
-              row[x * 4] = rgba[s + 2];
-              row[x * 4 + 1] = rgba[s + 1];
-              row[x * 4 + 2] = rgba[s];
-              row[x * 4 + 3] = rgba[s + 3];
-            }
-            const heap = (c.m.pdfium as unknown as { HEAPU8?: Uint8Array }).HEAPU8;
-            if (heap) heap.set(row, buf + y * stride);
-            else row.forEach((v, i) => c.m.pdfium.setValue(buf + y * stride + i, v, 'i8'));
-          }
-          const img = c.m.FPDFPageObj_NewImageObj(c.doc);
-          c.m.FPDFImageObj_SetBitmap(0, 0, img, bmp);
-          setMatrix(c, img, [box.x2 - box.x1, 0, 0, box.y2 - box.y1, box.x1, box.y1]);
-          c.m.FPDFPage_InsertObject(page, img);
-        } finally {
-          c.m.FPDFBitmap_Destroy(bmp);
-        }
+        c.m.FPDFPage_InsertObject(page, newImage(c, box, rgba, width, height));
         if (!c.m.FPDFPage_GenerateContent(page)) throw new Error("Couldn't rewrite the page.");
       } finally {
         c.m.FPDF_ClosePage(page);

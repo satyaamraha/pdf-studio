@@ -220,7 +220,7 @@ function EditLayerImpl(p: Props) {
       const all = { x1: Math.min(region.x1, cover.x1), y1: Math.min(region.y1, cover.y1), x2: Math.max(region.x2, cover.x2), y2: Math.max(region.y2, cover.y2) };
       api.replaceText(page, all, ed.value, {
         cover: look.cover,
-        background: look.background,
+        patch: look.patch,
         ink: look.ink,
         font: scanFont(style.serif, style.bold),
         size: look.size,
