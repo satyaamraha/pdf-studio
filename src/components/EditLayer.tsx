@@ -1,14 +1,17 @@
-import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as RPointerEvent } from 'react';
+import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as RMouseEvent, type PointerEvent as RPointerEvent } from 'react';
 import { X } from 'lucide-react';
 import { normalizeBox } from '../lib/annotations';
 import { apply, invert, transformBox, type Box, type Matrix, type Point } from '../lib/geometry';
 import { getText, type PDFDocumentProxy } from '../lib/pdf';
-import type { Mark, PageImage } from '../lib/pdfEdit';
+import type { Mark, PageImage, ScanRewrite } from '../lib/pdfEdit';
+import { inspectScannedText, scanFont, type ScanLook } from '../lib/scanText';
 
 export type EditTool = 'text' | 'image' | 'add-image' | 'redact-area' | 'redact-text';
 
 export interface EditApi {
-  replaceText(page: number, box: Box, text: string): void;
+  replaceText(page: number, box: Box, text: string, scan?: ScanRewrite): void;
+  /** Whether the text there is hidden, like the recognised text over a scan. */
+  isHiddenText(page: number, box: Box): Promise<boolean>;
   addMark(mark: Mark): void;
   removeMark(index: number): void;
   requestImages(page: number): void;
@@ -44,7 +47,13 @@ interface TextRun {
 function EditLayerImpl(p: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [runs, setRuns] = useState<TextRun[]>([]);
-  const [editing, setEditing] = useState<{ run: TextRun; value: string } | null>(null);
+  const [editing, setEditingState] = useState<Editing | null>(null);
+  // The latest edit, read when it finishes (Enter and the blur after it must not apply it twice).
+  const editRef = useRef<Editing | null>(null);
+  const setEditing = (next: Editing | null | ((e: Editing | null) => Editing | null)) => {
+    editRef.current = typeof next === 'function' ? next(editRef.current) : next;
+    setEditingState(editRef.current);
+  };
   const [draft, setDraft] = useState<Box | null>(null);
   const [moving, setMoving] = useState<{ index: number; box: Box } | null>(null);
   const scale = Math.hypot(p.matrix[0], p.matrix[1]);
@@ -167,14 +176,57 @@ function EditLayerImpl(p: Props) {
   // Keep the moved preview until the edited page arrives.
   useEffect(() => setMoving(null), [p.images]);
 
+  const regionOf = (run: TextRun): Box => {
+    const pad = run.size * 0.1;
+    return { x1: run.box.x1 - pad, y1: run.box.y1 - pad, x2: run.box.x2 + pad, y2: run.box.y2 + pad };
+  };
+
+  const startEdit = (run: TextRun) => {
+    // On a scan, the text you see is part of the picture: find out, and read its look.
+    const look = api
+      .isHiddenText(page, regionOf(run))
+      .then((hidden) => (hidden ? inspectScannedText(p.doc, page, run) : null))
+      .catch(() => null);
+    setEditing({ run, value: run.text, original: run.text, look });
+    void look.then((l) =>
+      setEditing((e) => {
+        if (!e || e.run !== run) return e;
+        if (!l) return { ...e, scan: null };
+        // The visible word can be longer than what was recognised: start from all the recognised text it covers.
+        const covered = runs
+          .filter((r) => {
+            const cx = (r.box.x1 + r.box.x2) / 2;
+            const cy = (r.box.y1 + r.box.y2) / 2;
+            return cx >= l.cover.x1 && cx <= l.cover.x2 && cy >= l.cover.y1 && cy <= l.cover.y2;
+          })
+          .sort((a, b) => a.box.x1 - b.box.x1)
+          .map((r) => r.text.trim())
+          .join(' ');
+        const original = covered || run.text;
+        return { ...e, original, value: e.value === run.text ? original : e.value, scan: { look: l, serif: l.serif, bold: l.bold } };
+      }),
+    );
+  };
+
   const finishEdit = (commit: boolean) => {
-    const ed = editing;
+    const ed = editRef.current;
     setEditing(null);
-    if (commit && ed && ed.value !== ed.run.text) {
-      const pad = ed.run.size * 0.1;
-      const b = ed.run.box;
-      api.replaceText(page, { x1: b.x1 - pad, y1: b.y1 - pad, x2: b.x2 + pad, y2: b.y2 + pad }, ed.value);
-    }
+    if (!commit || !ed || ed.value === ed.original) return;
+    void ed.look.then((look) => {
+      const region = regionOf(ed.run);
+      if (!look) return api.replaceText(page, region, ed.value);
+      const style = ed.scan ?? { serif: look.serif, bold: look.bold };
+      const { cover } = look;
+      const all = { x1: Math.min(region.x1, cover.x1), y1: Math.min(region.y1, cover.y1), x2: Math.max(region.x2, cover.x2), y2: Math.max(region.y2, cover.y2) };
+      api.replaceText(page, all, ed.value, {
+        cover: look.cover,
+        background: look.background,
+        ink: look.ink,
+        font: scanFont(style.serif, style.bold),
+        size: look.size,
+        origin: look.origin,
+      });
+    });
   };
 
   const marks = p.marks.map((m, i) => ({ m, i })).filter(({ m }) => m.page === page);
@@ -196,24 +248,18 @@ function EditLayerImpl(p: Props) {
             className="edit-run"
             style={screen(r.box)}
             title="Click to edit this text"
-            onClick={() => setEditing({ run: r, value: r.text })}
+            onClick={() => startEdit(r)}
           />
         ))}
 
       {editing && (
-        <input
-          className="edit-input"
-          autoFocus
-          value={editing.value}
-          style={{ ...screen(editing.run.box), fontSize: editing.run.size * scale * 0.95, minWidth: (transformBox(p.matrix, editing.run.box).x2 - transformBox(p.matrix, editing.run.box).x1) }}
-          onChange={(e) => setEditing({ ...editing, value: e.target.value })}
-          onBlur={() => finishEdit(true)}
-          onKeyDown={(e) => {
-            e.stopPropagation();
-            if (e.key === 'Enter') finishEdit(true);
-            if (e.key === 'Escape') finishEdit(false);
-          }}
-          onPointerDown={(e) => e.stopPropagation()}
+        <EditInput
+          editing={editing}
+          scale={scale}
+          screen={screen}
+          width={transformBox(p.matrix, editing.scan?.look.cover ?? editing.run.box)}
+          onChange={setEditing}
+          onFinish={finishEdit}
         />
       )}
 
@@ -267,6 +313,92 @@ function EditLayerImpl(p: Props) {
 
       {draft && <div className={tool === 'redact-area' ? 'redact-mark draft' : 'image-frame draft'} style={screen(draft)} />}
     </div>
+  );
+}
+
+interface Editing {
+  run: TextRun;
+  value: string;
+  /** The text as it was; leaving it unchanged changes nothing. */
+  original: string;
+  /** Resolves to the scan's look when the text is part of a scanned picture. */
+  look: Promise<ScanLook | null>;
+  /** Known once `look` resolves; the font can be changed while editing. */
+  scan?: { look: ScanLook; serif: boolean; bold: boolean } | null;
+}
+
+const rgb = (c: [number, number, number]) => `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
+
+function EditInput({
+  editing,
+  scale,
+  screen,
+  width,
+  onChange,
+  onFinish,
+}: {
+  editing: Editing;
+  scale: number;
+  screen: (b: Box) => CSSProperties;
+  width: Box;
+  onChange: (e: Editing) => void;
+  onFinish: (commit: boolean) => void;
+}) {
+  const scan = editing.scan;
+  const style: CSSProperties = scan
+    ? {
+        ...screen(scan.look.cover),
+        fontSize: scan.look.size * scale,
+        background: rgb(scan.look.background),
+        color: rgb(scan.look.ink),
+        fontFamily: scan.serif ? '"Times New Roman", Times, serif' : 'Helvetica, Arial, sans-serif',
+        fontWeight: scan.bold ? 700 : 400,
+      }
+    : { ...screen(editing.run.box), fontSize: editing.run.size * scale * 0.95 };
+  const set = (patch: Partial<{ serif: boolean; bold: boolean }>) => scan && onChange({ ...editing, scan: { ...scan, ...patch } });
+  // Keeps focus in the text box while the font buttons are used.
+  const keepFocus = (e: RPointerEvent | RMouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+  return (
+    <>
+      <input
+        className="edit-input"
+        autoFocus
+        value={editing.value}
+        style={{ ...style, minWidth: width.x2 - width.x1 }}
+        onChange={(e) => onChange({ ...editing, value: e.target.value })}
+        onBlur={() => onFinish(true)}
+        onKeyDown={(e) => {
+          e.stopPropagation();
+          if (e.key === 'Enter') onFinish(true);
+          if (e.key === 'Escape') onFinish(false);
+        }}
+        onPointerDown={(e) => e.stopPropagation()}
+      />
+      {scan && (
+        <div
+          className="scan-edit-bar"
+          style={{ left: (style.left as number) ?? 0, top: ((style.top as number) ?? 0) + ((style.height as number) ?? 0) + 6 }}
+          onPointerDown={keepFocus}
+          onMouseDown={keepFocus}
+        >
+          <span className="muted">Scanned text</span>
+          <div className="segmented">
+            <button aria-pressed={!scan.serif} onClick={() => set({ serif: false })}>
+              Sans
+            </button>
+            <button aria-pressed={scan.serif} onClick={() => set({ serif: true })} style={{ fontFamily: 'Times, serif' }}>
+              Serif
+            </button>
+          </div>
+          <button className={`icon-btn small${scan.bold ? ' active' : ''}`} aria-pressed={scan.bold} onClick={() => set({ bold: !scan.bold })} title="Bold">
+            <b>B</b>
+          </button>
+        </div>
+      )}
+    </>
   );
 }
 

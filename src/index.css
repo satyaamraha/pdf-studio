@@ -2120,6 +2120,37 @@ button.primary.danger-fill {
   -webkit-user-select: text;
   z-index: 2;
 }
+.scan-edit-bar {
+  position: absolute;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: 0 4px 14px rgb(0 0 0 / 0.16);
+  pointer-events: auto;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.scan-edit-bar .segmented {
+  margin: 0;
+}
+.scan-edit-bar .segmented button {
+  padding: 0 10px;
+  height: 24px;
+}
+.scan-edit-bar .segmented button[aria-pressed='true'],
+.scan-edit-bar .icon-btn[aria-pressed='true'] {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.12);
+}
+.scan-edit-bar .icon-btn[aria-pressed='true'] {
+  background: var(--chrome-2);
+}
 .image-frame {
   position: absolute;
   border: 1.5px dashed var(--accent);

@@ -736,12 +736,13 @@ export function DocumentView(props: Props) {
 
   const editApi = useMemo<EditApi>(
     () => ({
-      replaceText: (page, box, text) =>
+      replaceText: (page, box, text, scan) =>
         void runEdit('Updating text…', async (base, e) => {
-          const r = await e.replaceText(base, page, box, text);
+          const r = await e.replaceText(base, page, box, text, scan);
           if (!r.fontKept) props.onError('The original font doesn’t have all of those characters, so the closest standard font was used.');
           return { base: r.bytes };
         }),
+      isHiddenText: (page, box) => import('../lib/pdfEdit').then((e) => e.isHiddenText(baseRef.current, page, box)),
       addMark: (mark) => setMarks((m) => [...m, mark]),
       removeMark: (i) => setMarks((m) => m.filter((_, k) => k !== i)),
       requestImages: (page) => {

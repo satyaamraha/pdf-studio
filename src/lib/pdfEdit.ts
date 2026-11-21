@@ -436,7 +436,46 @@ function fontName(c: Ctx, font: number): string {
  * The original font is kept when it has every character needed; otherwise the closest
  * standard font (Helvetica, Times or Courier) is used.
  */
-export async function replaceText(bytes: Uint8Array, pageIndex: number, region: Box, text: string): Promise<{ bytes: Uint8Array; fontKept: boolean }> {
+/** How to redraw text that is part of a scanned picture (see scanText.ts). */
+export interface ScanRewrite {
+  /** Area of the picture to paint over, in the page's coordinates. */
+  cover: Box;
+  background: [number, number, number];
+  ink: [number, number, number];
+  /** Standard font name, e.g. 'Times-Bold'. */
+  font: string;
+  size: number;
+  /** Baseline start of the new text. */
+  origin: [number, number];
+}
+
+const INVISIBLE = [3, 7];
+
+/**
+ * True when the text in `region` is hidden, like the recognised-text layer over a scan:
+ * what you see there is the picture, not this text.
+ */
+export async function isHiddenText(bytes: Uint8Array, pageIndex: number, region: Box): Promise<boolean> {
+  const { result } = await withDoc(
+    bytes,
+    (c) => {
+      const page = c.m.FPDF_LoadPage(c.doc, pageIndex);
+      if (!page) return false;
+      try {
+        const chars = readChars(c, page).filter((ch) => containsPoint(region, (ch.box.x1 + ch.box.x2) / 2, (ch.box.y1 + ch.box.y2) / 2));
+        const objs = new Set(chars.map((ch) => ch.obj));
+        return objs.size > 0 && [...objs].every((o) => INVISIBLE.includes(c.m.FPDFTextObj_GetTextRenderMode(o)));
+      } finally {
+        c.m.FPDF_ClosePage(page);
+      }
+    },
+    false,
+  );
+  return result;
+}
+
+export async function replaceText(bytes: Uint8Array, pageIndex: number, region: Box, text: string, scan?: ScanRewrite): Promise<{ bytes: Uint8Array; fontKept: boolean }> {
+  if (scan) return { bytes: await rewriteScannedText(bytes, pageIndex, region, text, scan), fontKept: true };
   let fontKept = true;
   const { bytes: out } = await withDoc(
     bytes,
@@ -476,6 +515,55 @@ export async function replaceText(bytes: Uint8Array, pageIndex: number, region: 
     true,
   );
   return { bytes: await cleanUp(out!), fontKept };
+}
+
+/**
+ * Text on a scan is pixels. The hidden recognised text in `region` is replaced (so search
+ * finds the new words), the old word is painted over in the paper's colour, and the new
+ * text is drawn on top in the ink's colour. The old pixels stay underneath the cover;
+ * redaction is the way to remove them from the file.
+ */
+async function rewriteScannedText(bytes: Uint8Array, pageIndex: number, region: Box, text: string, scan: ScanRewrite): Promise<Uint8Array> {
+  const { bytes: out } = await withDoc(
+    bytes,
+    (c) => {
+      const page = c.m.FPDF_LoadPage(c.doc, pageIndex);
+      if (!page) throw new Error('Page not found.');
+      try {
+        const objects = walk(c, page);
+        const chars = readChars(c, page);
+        const inRegion = (ch: CharInfo) => containsPoint(region, (ch.box.x1 + ch.box.x2) / 2, (ch.box.y1 + ch.box.y2) / 2);
+        const first = chars.find(inRegion);
+        const firstObj = first && objects.find((o) => o.obj === first.obj);
+        const anchorIndex = firstObj && !firstObj.parent ? pageIndexOf(c, page, firstObj.obj) : -1;
+        removeChars(c, page, objects, chars, inRegion);
+        const at = () => (anchorIndex >= 0 && anchorIndex < c.m.FPDFPage_CountObjects(page) ? anchorIndex : -1);
+        const insert = (obj: number) => {
+          const i = at();
+          if (i < 0 || !c.m.FPDFPage_InsertObjectAtIndex(page, obj, i)) c.m.FPDFPage_InsertObject(page, obj);
+        };
+        const { cover, background: bg, ink } = scan;
+        const rect = c.m.FPDFPageObj_CreateNewRect(cover.x1, cover.y1, cover.x2 - cover.x1, cover.y2 - cover.y1);
+        c.m.FPDFPageObj_SetFillColor(rect, bg[0], bg[1], bg[2], 255);
+        c.m.FPDFPath_SetDrawMode(rect, 1, false);
+        insert(rect);
+        if (text.trim()) {
+          const t = c.m.FPDFPageObj_CreateTextObj(c.doc, c.m.FPDFText_LoadStandardFont(c.doc, scan.font), scan.size);
+          if (!t || !c.m.FPDFText_SetText(t, c.mem.wide(text))) throw new Error("Couldn't add the new text.");
+          setMatrix(c, t, [1, 0, 0, 1, scan.origin[0], scan.origin[1]]);
+          c.m.FPDFPageObj_SetFillColor(t, ink[0], ink[1], ink[2], 255);
+          // Drawn after the cover, so it sits on top.
+          const i = at();
+          if (i < 0 || !c.m.FPDFPage_InsertObjectAtIndex(page, t, i + 1)) c.m.FPDFPage_InsertObject(page, t);
+        }
+        if (!c.m.FPDFPage_GenerateContent(page)) throw new Error("Couldn't rewrite the page.");
+      } finally {
+        c.m.FPDF_ClosePage(page);
+      }
+    },
+    true,
+  );
+  return cleanUp(out!);
 }
 
 // ----- Images -----
